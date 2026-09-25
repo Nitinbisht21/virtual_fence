@@ -1,0 +1,11 @@
+# Geofence Map Builder - Python Backend Requirements
+#
+# NOTE: The Python backend has a dual-engine architecture and runs out-of-the-box
+# with ZERO external dependencies using Python's built-in http.server and sqlite3.
+#
+# If you want to use Flask inside your virtual environment, install as needed:
+#   python -m venv venv
+#   .\venv\Scripts\activate   # Windows
+#   pip install -r requirements.txt
+#
+Flask>=2.2.0

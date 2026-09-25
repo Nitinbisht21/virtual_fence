@@ -1,0 +1,17 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local Database
+geofences.db
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
