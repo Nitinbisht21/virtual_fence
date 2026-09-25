@@ -1,11 +1,13 @@
 """
 Geofence Map Builder - Python Backend
 Provides:
-  - Persistent SQLite Database ('geofences.db')
-  - Full REST API (/api/geofences, /api/geofences/<id>, /api/geofences/export, etc.)
+  - MongoDB & MongoDB Compass integration (primary persistent store)
+  - Persistent SQLite fallback ('geofences.db')
+  - Full REST API (/api/geofences, /api/geofences/<id>, /api/geofences/export, /api/database/status, etc.)
   - Real-time GPS Telemetry Evaluation Engine (/api/telemetry/evaluate)
+  - Footprint Recording & Live Event Logging ('footprints.log')
   - Static file serving for the frontend dashboard
-  - Dual Engine: Uses Flask if available; falls back automatically to built-in http.server (Zero external dependencies required!)
+  - Dual Engine: Uses Flask if available; falls back automatically to built-in http.server
 """
 
 import os
@@ -17,25 +19,43 @@ import uuid
 import sqlite3
 from datetime import datetime
 
+# Load environment variables (.env)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+# MongoDB Driver (pymongo)
+try:
+    import pymongo
+except ImportError:
+    pymongo = None
+
 PORT = int(os.environ.get('PORT', 5000))
+MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017')
+MONGODB_DB_NAME = os.environ.get('MONGODB_DB_NAME', 'virtual_fence')
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'geofences.db')
 STATIC_DIR = os.path.dirname(os.path.abspath(__file__))
 FOOTPRINTS_LOG_PATH = os.path.join(STATIC_DIR, 'footprints.log')
 EARTH_RADIUS_METERS = 6371008.8
 
+mongo_client = None
+mongo_db = None
+use_mongodb = False
 device_last_known_geofences = {}
 
 # -----------------------------------------------------------------------------
-# DATABASE INITIALIZATION
+# DATABASE INITIALIZATION: SQLITE & MONGODB COMPASS INTEGRATION
 # -----------------------------------------------------------------------------
 
-def get_db_connection():
+def get_sqlite_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_db():
-    conn = get_db_connection()
+def sqlite_init_db():
+    conn = get_sqlite_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS geofences (
@@ -97,6 +117,66 @@ def init_db():
 
     conn.close()
 
+def init_mongo_connection():
+    global mongo_client, mongo_db, use_mongodb
+    if pymongo is None:
+        print(">> [Database Notice] 'pymongo' not installed. Running on SQLite.")
+        return False
+
+    try:
+        client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=1800)
+        client.admin.command('ping')
+        mongo_client = client
+        mongo_db = client[MONGODB_DB_NAME]
+        use_mongodb = True
+
+        mongo_db.geofences.create_index('id', unique=True)
+        mongo_db.footprints.create_index('id', unique=True)
+        mongo_db.footprints.create_index([('created_at', pymongo.DESCENDING)])
+
+        print(">> [Database] ==================================================")
+        print(">> [Database] MongoDB Connection Established!")
+        print(f">> [Database] Database: '{MONGODB_DB_NAME}'")
+        print(f">> [Database] MongoDB Compass URI: {MONGODB_URI}")
+        print(f">> [Database] Collections: 'geofences', 'footprints'")
+        print(">> [Database] ==================================================")
+
+        # If MongoDB geofences is empty, migrate existing fences from SQLite or seed default
+        if mongo_db.geofences.count_documents({}) == 0:
+            existing_fences = sqlite_list_geofences()
+            if existing_fences:
+                for f in existing_fences:
+                    clean_f = dict(f)
+                    clean_f.pop('_id', None)
+                    mongo_db.geofences.insert_one(clean_f)
+                print(f">> [Database] Migrated {len(existing_fences)} geofence(s) to MongoDB '{MONGODB_DB_NAME}'!")
+            else:
+                now = datetime.utcnow().isoformat() + 'Z'
+                mongo_db.geofences.insert_one({
+                    'id': 'geo_default_headquarters',
+                    'name': 'Headquarters Perimeter',
+                    'type': 'circle',
+                    'coordinates': {'lat': 30.123456, 'lng': 78.123456},
+                    'radius': 200.0,
+                    'status': 'active',
+                    'color': '#2563eb',
+                    'description': 'Primary facility security perimeter (200m zone)',
+                    'created_at': now,
+                    'updated_at': now
+                })
+                print(f">> [Database] Seeded initial default geofence into MongoDB '{MONGODB_DB_NAME}.geofences'")
+        return True
+    except Exception as e:
+        use_mongodb = False
+        print(f">> [Database Notice] MongoDB Compass connection '{MONGODB_URI}' unreachable ({e}).")
+        print(f">> [Database Notice] Using local SQLite database (geofences.db).")
+        print(f">> [Database Notice] In MongoDB Compass, open and connect to: {MONGODB_URI}")
+        return False
+
+def init_db():
+    sqlite_init_db()
+    init_mongo_connection()
+
 # -----------------------------------------------------------------------------
 # SPATIAL MATHEMATICS ENGINE
 # -----------------------------------------------------------------------------
@@ -153,10 +233,11 @@ def evaluate_point_against_fence(point, fence):
         return is_point_in_rectangle(point, coords)
     elif ftype == 'polygon':
         return is_point_in_polygon(point, coords)
-    elif ftype == 'flag':
-        center = (coords['lat'], coords['lng'])
-        return is_point_in_circle(point, center, float(fence.get('radius') or 25.0))
     return False
+
+# -----------------------------------------------------------------------------
+# 1. SQLITE PERSISTENCE LAYER (LOCAL DUAL-STORAGE / FALLBACK)
+# -----------------------------------------------------------------------------
 
 def row_to_dict(row):
     coords = row['coordinates']
@@ -179,47 +260,41 @@ def row_to_dict(row):
         'updated_at': row['updated_at']
     }
 
-# -----------------------------------------------------------------------------
-# CORE CRUD LOGIC (SHARED)
-# -----------------------------------------------------------------------------
-
-def db_list_geofences():
-    conn = get_db_connection()
+def sqlite_list_geofences():
+    conn = get_sqlite_connection()
     c = conn.cursor()
     c.execute('SELECT * FROM geofences ORDER BY created_at DESC')
     rows = c.fetchall()
     conn.close()
     return [row_to_dict(r) for r in rows]
 
-def db_create_geofence(data):
+def sqlite_create_geofence(data):
     now = datetime.utcnow().isoformat() + 'Z'
     fence_id = data.get('id') or f"geo_{int(datetime.utcnow().timestamp()*1000)}"
     name = (data.get('name') or 'Unnamed Geofence').strip()
     ftype = data.get('type')
     coords = data.get('coordinates')
-    radius = float(data.get('radius')) if (ftype in ['circle', 'flag']) and data.get('radius') is not None else None
+    radius = float(data.get('radius')) if ftype == 'circle' and data.get('radius') is not None else None
     status = data.get('status') or 'active'
     color = data.get('color') or '#2563eb'
     description = (data.get('description') or '').strip()
-
     coords_json = json.dumps(coords) if not isinstance(coords, str) else coords
 
-    conn = get_db_connection()
+    conn = get_sqlite_connection()
     c = conn.cursor()
     c.execute('''
-        INSERT INTO geofences (id, name, type, coordinates, radius, status, color, description, created_at, updated_at)
+        INSERT OR REPLACE INTO geofences (id, name, type, coordinates, radius, status, color, description, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (fence_id, name, ftype, coords_json, radius, status, color, description, now, now))
     conn.commit()
-
     c.execute('SELECT * FROM geofences WHERE id = ?', (fence_id,))
     row = c.fetchone()
     conn.close()
     return row_to_dict(row)
 
-def db_update_geofence(fence_id, data):
+def sqlite_update_geofence(fence_id, data):
     now = datetime.utcnow().isoformat() + 'Z'
-    conn = get_db_connection()
+    conn = get_sqlite_connection()
     c = conn.cursor()
     c.execute('SELECT * FROM geofences WHERE id = ?', (fence_id,))
     row = c.fetchone()
@@ -231,16 +306,10 @@ def db_update_geofence(fence_id, data):
     name = (data.get('name') if 'name' in data else existing['name']).strip()
     ftype = data.get('type') if 'type' in data else existing['type']
     coords = data.get('coordinates') if 'coordinates' in data else existing['coordinates']
-    if 'radius' in data and data['radius'] is not None and ftype in ['circle', 'flag']:
-        radius = float(data['radius'])
-    elif ftype in ['circle', 'flag']:
-        radius = float(existing.get('radius') or 25)
-    else:
-        radius = None
+    radius = float(data['radius']) if 'radius' in data and data['radius'] is not None and ftype == 'circle' else (float(existing.get('radius') or 200) if ftype == 'circle' else None)
     status = data.get('status') if 'status' in data else existing['status']
     color = data.get('color') if 'color' in data else existing['color']
     description = (data.get('description') if 'description' in data else existing['description']).strip()
-
     coords_json = json.dumps(coords) if not isinstance(coords, str) else coords
 
     c.execute('''
@@ -249,14 +318,13 @@ def db_update_geofence(fence_id, data):
         WHERE id = ?
     ''', (name, ftype, coords_json, radius, status, color, description, now, fence_id))
     conn.commit()
-
     c.execute('SELECT * FROM geofences WHERE id = ?', (fence_id,))
     updated = c.fetchone()
     conn.close()
     return row_to_dict(updated)
 
-def db_delete_geofence(fence_id):
-    conn = get_db_connection()
+def sqlite_delete_geofence(fence_id):
+    conn = get_sqlite_connection()
     c = conn.cursor()
     c.execute('DELETE FROM geofences WHERE id = ?', (fence_id,))
     deleted = c.rowcount > 0
@@ -264,8 +332,8 @@ def db_delete_geofence(fence_id):
     conn.close()
     return deleted
 
-def db_toggle_geofence(fence_id):
-    conn = get_db_connection()
+def sqlite_toggle_geofence(fence_id):
+    conn = get_sqlite_connection()
     c = conn.cursor()
     c.execute('SELECT status FROM geofences WHERE id = ?', (fence_id,))
     row = c.fetchone()
@@ -282,12 +350,181 @@ def db_toggle_geofence(fence_id):
     conn.close()
     return row_to_dict(updated)
 
-def db_clear_all():
-    conn = get_db_connection()
+def sqlite_clear_all():
+    conn = get_sqlite_connection()
     c = conn.cursor()
     c.execute('DELETE FROM geofences')
     conn.commit()
     conn.close()
+
+def sqlite_record_footprint(record):
+    conn = get_sqlite_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO footprints (id, device_id, geofence_id, geofence_name, latitude, longitude, event, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (record['id'], record['device_id'], record['geofence_id'], record['geofence_name'],
+          record['latitude'], record['longitude'], record['event'], record['source'], record['created_at']))
+    conn.commit()
+    conn.close()
+
+def sqlite_list_footprints(limit=50):
+    conn = get_sqlite_connection()
+    c = conn.cursor()
+    c.execute('SELECT * FROM footprints ORDER BY created_at DESC LIMIT ?', (int(limit),))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+def sqlite_clear_footprints():
+    conn = get_sqlite_connection()
+    c = conn.cursor()
+    c.execute('DELETE FROM footprints')
+    conn.commit()
+    conn.close()
+
+# -----------------------------------------------------------------------------
+# 2. MONGODB PERSISTENCE LAYER (COMPASS COMPATIBLE)
+# -----------------------------------------------------------------------------
+
+def mongo_list_geofences():
+    docs = mongo_db.geofences.find({}, {'_id': 0}).sort('created_at', -1)
+    return list(docs)
+
+def mongo_create_geofence(fence_dict):
+    doc = dict(fence_dict)
+    doc.pop('_id', None)
+    mongo_db.geofences.replace_one({'id': doc['id']}, doc, upsert=True)
+    return doc
+
+def mongo_update_geofence(fence_id, data):
+    existing = mongo_db.geofences.find_one({'id': fence_id}, {'_id': 0})
+    if not existing:
+        return None
+    now = datetime.utcnow().isoformat() + 'Z'
+    updated = dict(existing)
+    for k in ['name', 'type', 'coordinates', 'radius', 'status', 'color', 'description']:
+        if k in data:
+            updated[k] = data[k]
+    updated['updated_at'] = now
+    mongo_db.geofences.replace_one({'id': fence_id}, updated)
+    return updated
+
+def mongo_delete_geofence(fence_id):
+    res = mongo_db.geofences.delete_one({'id': fence_id})
+    return res.deleted_count > 0
+
+def mongo_toggle_geofence(fence_id):
+    existing = mongo_db.geofences.find_one({'id': fence_id}, {'_id': 0})
+    if not existing:
+        return None
+    new_status = 'disabled' if existing.get('status') == 'active' else 'active'
+    now = datetime.utcnow().isoformat() + 'Z'
+    existing['status'] = new_status
+    existing['updated_at'] = now
+    mongo_db.geofences.replace_one({'id': fence_id}, existing)
+    return existing
+
+def mongo_clear_all():
+    mongo_db.geofences.delete_many({})
+
+def mongo_record_footprint(record):
+    doc = dict(record)
+    doc.pop('_id', None)
+    mongo_db.footprints.insert_one(doc)
+
+def mongo_list_footprints(limit=50):
+    docs = mongo_db.footprints.find({}, {'_id': 0}).sort('created_at', -1).limit(int(limit))
+    return list(docs)
+
+def mongo_clear_footprints():
+    mongo_db.footprints.delete_many({})
+
+# -----------------------------------------------------------------------------
+# 3. UNIFIED DATABASE DISPATCHER (MONGODB PRIMARY + SQLITE DUAL SYNC)
+# -----------------------------------------------------------------------------
+
+def db_list_geofences():
+    if use_mongodb and mongo_db is not None:
+        try:
+            return mongo_list_geofences()
+        except Exception as e:
+            print(f">> [Database Warning] MongoDB read failed: {e}. Falling back to SQLite.")
+    return sqlite_list_geofences()
+
+def db_create_geofence(data):
+    now = datetime.utcnow().isoformat() + 'Z'
+    fence_id = data.get('id') or f"geo_{int(datetime.utcnow().timestamp()*1000)}"
+    name = (data.get('name') or 'Unnamed Geofence').strip()
+    ftype = data.get('type')
+    coords = data.get('coordinates')
+    radius = float(data.get('radius')) if ftype == 'circle' and data.get('radius') is not None else None
+    status = data.get('status') or 'active'
+    color = data.get('color') or '#2563eb'
+    description = (data.get('description') or '').strip()
+
+    fence_dict = {
+        'id': fence_id,
+        'name': name,
+        'type': ftype,
+        'coordinates': coords,
+        'radius': radius,
+        'status': status,
+        'color': color,
+        'description': description,
+        'created_at': now,
+        'updated_at': now
+    }
+
+    # Save to SQLite
+    sqlite_create_geofence(fence_dict)
+
+    # Save to MongoDB if available
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_create_geofence(fence_dict)
+        except Exception as e:
+            print(f">> [Database Warning] MongoDB write failed: {e}")
+
+    return fence_dict
+
+def db_update_geofence(fence_id, data):
+    sqlite_res = sqlite_update_geofence(fence_id, data)
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_res = mongo_update_geofence(fence_id, data)
+            if mongo_res:
+                return mongo_res
+        except Exception as e:
+            print(f">> [Database Warning] MongoDB update failed: {e}")
+    return sqlite_res
+
+def db_delete_geofence(fence_id):
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_delete_geofence(fence_id)
+        except Exception:
+            pass
+    return sqlite_delete_geofence(fence_id)
+
+def db_toggle_geofence(fence_id):
+    sqlite_res = sqlite_toggle_geofence(fence_id)
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_res = mongo_toggle_geofence(fence_id)
+            if mongo_res:
+                return mongo_res
+        except Exception:
+            pass
+    return sqlite_res
+
+def db_clear_all():
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_clear_all()
+        except Exception:
+            pass
+    sqlite_clear_all()
 
 def db_export_geojson():
     fences = db_list_geofences()
@@ -346,7 +583,6 @@ def evaluate_telemetry(data):
             'geofence_id': fid,
             'timestamp': datetime.utcnow().isoformat() + 'Z'
         })
-
     for fid in (previously_inside - currently_inside):
         events.append({
             'event': 'EXIT',
@@ -384,8 +620,6 @@ def log_footprint_entry(entry):
         print(f">> Error logging footprint to file: {e}", file=sys.stderr)
 
 def db_record_footprint(data):
-    conn = get_db_connection()
-    c = conn.cursor()
     fid = data.get('id') or f"fp_{int(datetime.utcnow().timestamp()*1000)}_{uuid.uuid4().hex[:6]}"
     now = datetime.utcnow().isoformat() + 'Z'
     device_id = str(data.get('device_id', 'MOUSE_KEY'))
@@ -395,13 +629,6 @@ def db_record_footprint(data):
     longitude = float(data.get('longitude', 0.0))
     event = str(data.get('event', 'INSIDE')).upper()
     source = str(data.get('source', 'mouse_or_sim'))
-
-    c.execute('''
-        INSERT INTO footprints (id, device_id, geofence_id, geofence_name, latitude, longitude, event, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (fid, device_id, geofence_id, geofence_name, latitude, longitude, event, source, now))
-    conn.commit()
-    conn.close()
 
     record = {
         'id': fid,
@@ -414,29 +641,55 @@ def db_record_footprint(data):
         'source': source,
         'created_at': now
     }
+
+    # Record in MongoDB
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_record_footprint(record)
+        except Exception as e:
+            print(f">> [Database Warning] MongoDB footprint write failed: {e}")
+
+    # Record in SQLite & log file
+    sqlite_record_footprint(record)
     log_footprint_entry(record)
     return record
 
 def db_list_footprints(limit=50):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT * FROM footprints ORDER BY created_at DESC LIMIT ?', (int(limit),))
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    if use_mongodb and mongo_db is not None:
+        try:
+            return mongo_list_footprints(limit)
+        except Exception:
+            pass
+    return sqlite_list_footprints(limit)
 
 def db_clear_footprints():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('DELETE FROM footprints')
-    conn.commit()
-    conn.close()
+    if use_mongodb and mongo_db is not None:
+        try:
+            mongo_clear_footprints()
+        except Exception:
+            pass
+    sqlite_clear_footprints()
     try:
         with open(FOOTPRINTS_LOG_PATH, 'w', encoding='utf-8') as f:
             f.write(f"# Footprint Activity Log Reset at {datetime.utcnow().isoformat()}Z\n")
     except Exception:
         pass
     return True
+
+def get_database_status():
+    fences_count = mongo_db.geofences.count_documents({}) if (use_mongodb and mongo_db is not None) else len(sqlite_list_geofences())
+    footprints_count = mongo_db.footprints.count_documents({}) if (use_mongodb and mongo_db is not None) else len(sqlite_list_footprints(10000))
+    return {
+        'active_database': 'MongoDB' if use_mongodb else 'SQLite',
+        'active_engine': 'MongoDB' if use_mongodb else 'SQLite',
+        'mongodb_connected': use_mongodb,
+        'mongodb_uri': MONGODB_URI,
+        'mongodb_database': MONGODB_DB_NAME,
+        'compass_connection_string': MONGODB_URI,
+        'collections': ['geofences', 'footprints'],
+        'geofences_count': fences_count,
+        'footprints_count': footprints_count
+    }
 
 def generate_dummy_point_inside_fence(fence):
     coords = fence.get('coordinates')
@@ -594,6 +847,10 @@ def run_flask():
         records = generate_dummy_footprints_in_area(count, fence_id)
         return jsonify(records)
 
+    @app.route('/api/database/status', methods=['GET'])
+    def api_db_status():
+        return jsonify(get_database_status())
+
     @app.route('/')
     def root():
         return send_from_directory('.', 'index.html')
@@ -629,6 +886,8 @@ def run_builtin():
 
             if path == '/api/geofences':
                 self.send_json(db_list_geofences())
+            elif path == '/api/database/status':
+                self.send_json(get_database_status())
             elif path == '/api/footprints':
                 qs = urllib.parse.parse_qs(parsed.query)
                 limit = int(qs.get('limit', [50])[0])
@@ -717,16 +976,24 @@ def run_builtin():
 
 if __name__ == '__main__':
     init_db()
-    print("=" * 60)
+    db_stat = get_database_status()
+    print("=" * 64)
     print(">> GEOFENCE MAP BUILDER - PYTHON BACKEND")
-    print(f">> Database: SQLite ({DB_PATH})")
-    print(f">> Serving at: http://localhost:{PORT}")
-    print("=" * 60)
+    print(f">> Primary Engine: {db_stat['active_engine']}")
+    if db_stat['mongodb_connected']:
+        print(f">> MongoDB Compass URI: {db_stat['mongodb_uri']}")
+        print(f">> MongoDB Database:    {db_stat['mongodb_database']}")
+        print(f">> Compass Collections: geofences ({db_stat['geofences_count']}), footprints ({db_stat['footprints_count']})")
+    else:
+        print(f">> SQLite Database:     {DB_PATH}")
+        print(f">> MongoDB Compass URI: {MONGODB_URI} (Set MONGODB_URI in .env or start mongod)")
+    print(f">> Serving Dashboard at: http://localhost:{PORT}")
+    print("=" * 64)
 
     try:
         import flask
-        print(">> Engine: Flask Active")
+        print(">> Web Engine: Flask Active")
         run_flask()
     except ImportError:
-        print(">> Engine: Built-in Python HTTP Engine (Flask not in this environment)")
+        print(">> Web Engine: Built-in Python HTTP Engine (Flask not in this environment)")
         run_builtin()

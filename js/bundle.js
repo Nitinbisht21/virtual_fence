@@ -1703,9 +1703,14 @@
       }
       this.enterExploreMode();
       this.loadRecentFootprintsFromBackend();
+      this.loadDatabaseStatus();
     }
 
     initElements() {
+      this.dbStatusBadge = document.getElementById('db-status-badge');
+      this.dbStatusText = document.getElementById('db-status-text');
+      this.compassUri = 'mongodb://localhost:27017';
+
       this.modeButtons = document.querySelectorAll('[data-mode]');
       this.modeSections = {
         [GeofenceType.CIRCLE]: document.getElementById('section-circle'),
@@ -1913,6 +1918,21 @@
       if (this.btnClearFootprints) {
         this.btnClearFootprints.addEventListener('click', () => {
           this.clearAllFootprints();
+        });
+      }
+
+      if (this.dbStatusBadge) {
+        this.dbStatusBadge.addEventListener('click', () => {
+          const uri = this.compassUri || 'mongodb://localhost:27017';
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(uri).then(() => {
+              this.showToast(`📋 Copied MongoDB Compass URI to clipboard:\n${uri}`, 'success');
+            }).catch(() => {
+              this.showToast(`MongoDB Compass URI: ${uri}`, 'info');
+            });
+          } else {
+            this.showToast(`MongoDB Compass URI: ${uri}`, 'info');
+          }
         });
       }
 
@@ -3291,6 +3311,27 @@
           this.showToast('Footprints, Flag Markers, and DB logs cleared.', 'info');
         })
         .catch(err => console.warn('Clear footprints error:', err));
+    }
+
+    loadDatabaseStatus() {
+      fetch('/api/database/status')
+        .then(res => res.json())
+        .then(data => {
+          if (!this.dbStatusBadge || !this.dbStatusText) return;
+          this.compassUri = data.compass_connection_string || data.mongodb_uri || 'mongodb://localhost:27017';
+          if (data.mongodb_connected) {
+            this.dbStatusBadge.classList.add('mongo-active');
+            this.dbStatusBadge.classList.remove('sqlite-active');
+            this.dbStatusText.textContent = `MongoDB: ${data.mongodb_database}`;
+            this.dbStatusBadge.title = `MongoDB Compass Connected!\nURI: ${data.mongodb_uri}\nDatabase: ${data.mongodb_database}\nClick to copy Compass URI`;
+          } else {
+            this.dbStatusBadge.classList.add('sqlite-active');
+            this.dbStatusBadge.classList.remove('mongo-active');
+            this.dbStatusText.textContent = 'SQLite (Compass Ready)';
+            this.dbStatusBadge.title = `Using SQLite local database.\nIn MongoDB Compass, connect to: ${this.compassUri}\nClick to copy Compass URI`;
+          }
+        })
+        .catch(() => {});
     }
 
     confirmAction(title, message, callback) {

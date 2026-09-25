@@ -53,6 +53,12 @@
 
       <!-- Basemap Switcher & Tools -->
       <div class="header-actions">
+        <!-- Database & MongoDB Compass Status Badge -->
+        <div id="db-status-badge" class="db-status-badge" title="Database status & MongoDB Compass connection info">
+          <span class="db-indicator-dot"></span>
+          <span id="db-status-text">MongoDB Compass</span>
+        </div>
+
         <select id="tile-layer-select" class="select-control" title="Choose Map Style">
           <option value="google_streets" selected>Google Maps (Standard Streets)</option>
           <option value="google_hybrid">Google Maps (Satellite & Labels)</option>

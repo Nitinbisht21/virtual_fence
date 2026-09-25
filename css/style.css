@@ -226,6 +226,56 @@ html, body {
   gap: 0.75rem;
 }
 
+.db-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 5px 10px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.db-status-badge:hover {
+  background-color: var(--bg-input-focus);
+  border-color: var(--border-focus);
+  color: var(--text-primary);
+}
+
+.db-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #94a3b8;
+  display: inline-block;
+}
+
+.db-status-badge.mongo-active {
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #10b981;
+}
+
+.db-status-badge.mongo-active .db-indicator-dot {
+  background-color: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.8);
+}
+
+.db-status-badge.sqlite-active {
+  border-color: rgba(59, 130, 246, 0.35);
+  color: var(--text-primary);
+}
+
+.db-status-badge.sqlite-active .db-indicator-dot {
+  background-color: #3b82f6;
+  box-shadow: 0 0 5px rgba(59, 130, 246, 0.6);
+}
+
 .select-control {
   padding: 6px 12px;
   background-color: var(--bg-input);

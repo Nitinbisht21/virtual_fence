@@ -100,15 +100,44 @@ Open `http://localhost:5000` in your browser to access the Geofence Map Builder 
 
 ---
 
+---
+
+## MongoDB & MongoDB Compass Integration
+
+The application supports **MongoDB** as its primary persistent database, allowing you to visually inspect, manage, and query your geofences and live footprints using **MongoDB Compass**.
+
+### Connecting with MongoDB Compass:
+1. Open **MongoDB Compass**.
+2. In the connection string field, paste:
+   ```
+   mongodb://localhost:27017
+   ```
+   *(or your MongoDB Atlas connection string `mongodb+srv://...`)*
+3. Click **Connect**.
+4. You will see the **`virtual_fence`** database containing two primary collections:
+   - **`geofences`**: Contains all created shapes (Circle, Rectangle, Custom Polygon), boundary coordinates, colors, and configuration.
+   - **`footprints`**: Contains all real-time asset telemetry footprints, simulated data points, and mouse boundary `ENTER` / `EXIT` flag events.
+
+### Dual-Database Resilience:
+- If MongoDB is running, the server automatically connects and uses it as primary storage.
+- If MongoDB is momentarily stopped or disconnected, the backend seamlessly falls back to local SQLite (`geofences.db`), ensuring zero downtime.
+
+---
+
 ## REST API Reference
 
 | Method | Endpoint | Description |
 |---|---|---|
+| `GET` | `/api/database/status` | Check active database & MongoDB Compass connection info |
 | `GET` | `/api/geofences` | Retrieve all geofences |
 | `POST` | `/api/geofences` | Create a new geofence |
 | `GET` | `/api/geofences/<id>` | Get details of a single geofence |
 | `PUT` | `/api/geofences/<id>` | Update an existing geofence |
 | `DELETE` | `/api/geofences/<id>` | Delete a geofence |
+| `GET` | `/api/footprints` | Retrieve recent telemetry and flag footprint logs |
+| `POST` | `/api/footprints` | Record a footprint or mouse boundary event |
+| `DELETE` | `/api/footprints` | Clear all footprint records and reset log |
+| `POST` | `/api/simulation/generate` | Generate dummy points strictly inside active fence areas |
 | `POST` | `/api/telemetry/evaluate` | Evaluate GPS coordinates against fences |
 
 ### Telemetry Evaluation Request Example
