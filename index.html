@@ -314,6 +314,59 @@
               Clear All Geofences
             </button>
           </section>
+
+          <!-- Simulation, Footprints & Mouse Boundary Flag Engine -->
+          <section class="simulation-section">
+            <div class="sidebar-section-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+              <span>Footprints & Mouse Flags</span>
+              <span id="footprint-count-badge" class="count-pill">0</span>
+            </div>
+
+            <div class="sim-switches-grid">
+              <div class="sim-switch-item">
+                <span class="sim-switch-label">Mouse Cross Flag</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggle-mouse-tracking" checked>
+                  <span class="slider round"></span>
+                </label>
+              </div>
+              <div class="sim-switch-item">
+                <span class="sim-switch-label">Show Footprints</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggle-show-footprints" checked>
+                  <span class="slider round"></span>
+                </label>
+              </div>
+              <div class="sim-switch-item">
+                <span class="sim-switch-label">Show Flags</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggle-show-flags" checked>
+                  <span class="slider round"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="sim-actions-row">
+              <button type="button" id="btn-generate-footprints" class="btn-tool-sm" title="Generate dummy data points inside created fence area">
+                <span>👣</span> Drop 5 in Area
+              </button>
+              <button type="button" id="btn-toggle-simulation" class="btn-tool-sm btn-sim-play" title="Simulate moving assets inside created fence area">
+                <span id="btn-simulation-icon">▶</span> <span id="btn-simulation-text">Start Simulation</span>
+              </button>
+            </div>
+
+            <div class="log-panel-header">
+              <span class="log-panel-title">Real-Time Event Stream</span>
+              <div class="log-panel-tools">
+                <button type="button" id="btn-refresh-footprints" class="btn-log-action" title="Refresh log from database">↻</button>
+                <button type="button" id="btn-clear-footprints" class="btn-log-action" title="Clear logs and footprint points">✕</button>
+              </div>
+            </div>
+
+            <div id="footprints-log-list" class="footprints-log-box">
+              <div class="empty-hint" style="font-size: 0.74rem;">No footprints or flag events yet. Move mouse over fences or click Drop 5 in Area.</div>
+            </div>
+          </section>
         </div>
       </aside>
 
@@ -324,6 +377,16 @@
           <div id="hud-cursor-coords" class="hud-chip">
             <span class="hud-label">Cursor:</span>
             <span class="hud-val muted">Move over map...</span>
+          </div>
+
+          <div id="hud-mouse-fence" class="hud-chip">
+            <span class="hud-label">Mouse Fence:</span>
+            <span id="hud-mouse-fence-val" class="hud-val muted">Outside Fences</span>
+          </div>
+
+          <div id="hud-flag-count" class="hud-chip">
+            <span class="hud-label">Flags:</span>
+            <span id="hud-flag-count-val" class="hud-val monospace" style="color: #10b981; font-weight: 600;">0</span>
           </div>
 
           <div id="hud-center-coords" class="hud-chip">

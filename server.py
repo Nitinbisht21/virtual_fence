@@ -12,12 +12,15 @@ import os
 import sys
 import json
 import math
+import random
+import uuid
 import sqlite3
 from datetime import datetime
 
 PORT = int(os.environ.get('PORT', 5000))
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'geofences.db')
 STATIC_DIR = os.path.dirname(os.path.abspath(__file__))
+FOOTPRINTS_LOG_PATH = os.path.join(STATIC_DIR, 'footprints.log')
 EARTH_RADIUS_METERS = 6371008.8
 
 device_last_known_geofences = {}
@@ -48,6 +51,27 @@ def init_db():
             updated_at TEXT NOT NULL
         )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS footprints (
+            id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            geofence_id TEXT,
+            geofence_name TEXT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            event TEXT NOT NULL,
+            source TEXT DEFAULT 'simulation',
+            created_at TEXT NOT NULL
+        )
+    ''')
+
+    if not os.path.exists(FOOTPRINTS_LOG_PATH):
+        try:
+            with open(FOOTPRINTS_LOG_PATH, 'w', encoding='utf-8') as f:
+                f.write(f"# Footprint Activity Log Initialized at {datetime.utcnow().isoformat()}Z\n")
+        except Exception:
+            pass
 
     cursor.execute('SELECT COUNT(*) FROM geofences')
     count = cursor.fetchone()[0]
@@ -270,7 +294,7 @@ def db_export_geojson():
     features = []
     for f in fences:
         geom = None
-        if f['type'] in ('circle', 'flag'):
+        if f['type'] == 'circle':
             geom = {'type': 'Point', 'coordinates': [f['coordinates']['lng'], f['coordinates']['lat']]}
         elif f['type'] == 'rectangle':
             c = f['coordinates']
@@ -339,6 +363,162 @@ def evaluate_telemetry(data):
     }
 
 # -----------------------------------------------------------------------------
+# FOOTPRINT RECORDING, LOGGING & DUMMY AREA DATA GENERATOR
+# -----------------------------------------------------------------------------
+
+def log_footprint_entry(entry):
+    try:
+        ts = entry.get('created_at') or datetime.utcnow().isoformat() + 'Z'
+        device = entry.get('device_id', 'UNKNOWN_DEVICE')
+        fence_name = entry.get('geofence_name') or 'N/A'
+        event = entry.get('event', 'INSIDE')
+        lat = entry.get('latitude', 0.0)
+        lng = entry.get('longitude', 0.0)
+        source = entry.get('source', 'general')
+
+        line = f"[{ts}] [{event.upper()}] Device: {device} | Fence: {fence_name} | Lat: {float(lat):.6f}, Lng: {float(lng):.6f} | Source: {source}\n"
+        with open(FOOTPRINTS_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(line)
+            f.flush()
+    except Exception as e:
+        print(f">> Error logging footprint to file: {e}", file=sys.stderr)
+
+def db_record_footprint(data):
+    conn = get_db_connection()
+    c = conn.cursor()
+    fid = data.get('id') or f"fp_{int(datetime.utcnow().timestamp()*1000)}_{uuid.uuid4().hex[:6]}"
+    now = datetime.utcnow().isoformat() + 'Z'
+    device_id = str(data.get('device_id', 'MOUSE_KEY'))
+    geofence_id = data.get('geofence_id')
+    geofence_name = data.get('geofence_name')
+    latitude = float(data.get('latitude', 0.0))
+    longitude = float(data.get('longitude', 0.0))
+    event = str(data.get('event', 'INSIDE')).upper()
+    source = str(data.get('source', 'mouse_or_sim'))
+
+    c.execute('''
+        INSERT INTO footprints (id, device_id, geofence_id, geofence_name, latitude, longitude, event, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (fid, device_id, geofence_id, geofence_name, latitude, longitude, event, source, now))
+    conn.commit()
+    conn.close()
+
+    record = {
+        'id': fid,
+        'device_id': device_id,
+        'geofence_id': geofence_id,
+        'geofence_name': geofence_name,
+        'latitude': latitude,
+        'longitude': longitude,
+        'event': event,
+        'source': source,
+        'created_at': now
+    }
+    log_footprint_entry(record)
+    return record
+
+def db_list_footprints(limit=50):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT * FROM footprints ORDER BY created_at DESC LIMIT ?', (int(limit),))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+def db_clear_footprints():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('DELETE FROM footprints')
+    conn.commit()
+    conn.close()
+    try:
+        with open(FOOTPRINTS_LOG_PATH, 'w', encoding='utf-8') as f:
+            f.write(f"# Footprint Activity Log Reset at {datetime.utcnow().isoformat()}Z\n")
+    except Exception:
+        pass
+    return True
+
+def generate_dummy_point_inside_fence(fence):
+    coords = fence.get('coordinates')
+    if isinstance(coords, str):
+        try:
+            coords = json.loads(coords)
+        except Exception:
+            return None
+    if not coords:
+        return None
+
+    ftype = fence.get('type')
+    if ftype == 'circle':
+        center_lat = float(coords['lat'])
+        center_lng = float(coords['lng'])
+        radius = float(fence.get('radius') or 200.0)
+        # Random point inside 85% of radius to avoid boundary rounding issues
+        r = (radius * 0.85) * math.sqrt(0.05 + 0.95 * random.random())
+        theta = random.random() * 2 * math.pi
+        d_lat = (r * math.cos(theta)) / 111320.0
+        d_lng = (r * math.sin(theta)) / (111320.0 * math.cos(math.radians(center_lat)))
+        return {'lat': round(center_lat + d_lat, 6), 'lng': round(center_lng + d_lng, 6)}
+
+    elif ftype == 'rectangle':
+        north = float(coords['north'])
+        south = float(coords['south'])
+        east = float(coords['east'])
+        west = float(coords['west'])
+        lat = south + (north - south) * (0.08 + 0.84 * random.random())
+        lng = west + (east - west) * (0.08 + 0.84 * random.random())
+        return {'lat': round(lat, 6), 'lng': round(lng, 6)}
+
+    elif ftype == 'polygon':
+        pts = coords
+        if not isinstance(pts, list) or len(pts) < 3:
+            return None
+        lats = [p[0] for p in pts]
+        lngs = [p[1] for p in pts]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lng, max_lng = min(lngs), max(lngs)
+        for _ in range(100):
+            cand_lat = min_lat + (max_lat - min_lat) * random.random()
+            cand_lng = min_lng + (max_lng - min_lng) * random.random()
+            if is_point_in_polygon((cand_lat, cand_lng), pts):
+                return {'lat': round(cand_lat, 6), 'lng': round(cand_lng, 6)}
+        avg_lat = sum(lats) / len(lats)
+        avg_lng = sum(lngs) / len(lngs)
+        return {'lat': round(avg_lat, 6), 'lng': round(avg_lng, 6)}
+
+    return None
+
+def generate_dummy_footprints_in_area(count=5, specific_fence_id=None):
+    all_fences = db_list_geofences()
+    active_fences = [f for f in all_fences if f.get('status') == 'active']
+    if specific_fence_id:
+        active_fences = [f for f in active_fences if f.get('id') == specific_fence_id]
+
+    if not active_fences:
+        return []
+
+    device_names = ['PATROL_ALPHA', 'SCOUT_UNIT_02', 'FIELD_RANGER_7', 'DRONE_SURVEILLANCE', 'LOGISTICS_TRUCK_8']
+    generated_records = []
+
+    for i in range(int(count)):
+        fence = active_fences[i % len(active_fences)]
+        pt = generate_dummy_point_inside_fence(fence)
+        if pt:
+            device_id = device_names[i % len(device_names)]
+            rec = db_record_footprint({
+                'device_id': device_id,
+                'geofence_id': fence['id'],
+                'geofence_name': fence['name'],
+                'latitude': pt['lat'],
+                'longitude': pt['lng'],
+                'event': 'INSIDE',
+                'source': 'area_dummy_generator'
+            })
+            generated_records.append(rec)
+
+    return generated_records
+
+# -----------------------------------------------------------------------------
 # ENGINE 1: FLASK IMPLEMENTATION (When Flask is available)
 # -----------------------------------------------------------------------------
 
@@ -391,6 +571,29 @@ def run_flask():
         data = request.get_json(force=True)
         return jsonify(evaluate_telemetry(data))
 
+    @app.route('/api/footprints', methods=['GET'])
+    def api_get_footprints():
+        limit = request.args.get('limit', 50)
+        return jsonify(db_list_footprints(limit))
+
+    @app.route('/api/footprints', methods=['POST'])
+    def api_post_footprint():
+        data = request.get_json(force=True)
+        return jsonify(db_record_footprint(data)), 201
+
+    @app.route('/api/footprints', methods=['DELETE'])
+    def api_delete_footprints():
+        db_clear_footprints()
+        return jsonify({'success': True})
+
+    @app.route('/api/simulation/generate', methods=['POST'])
+    def api_generate_dummy():
+        data = request.get_json(force=True) or {}
+        count = data.get('count', 5)
+        fence_id = data.get('geofence_id')
+        records = generate_dummy_footprints_in_area(count, fence_id)
+        return jsonify(records)
+
     @app.route('/')
     def root():
         return send_from_directory('.', 'index.html')
@@ -426,6 +629,10 @@ def run_builtin():
 
             if path == '/api/geofences':
                 self.send_json(db_list_geofences())
+            elif path == '/api/footprints':
+                qs = urllib.parse.parse_qs(parsed.query)
+                limit = int(qs.get('limit', [50])[0])
+                self.send_json(db_list_footprints(limit))
             elif path == '/api/geofences/export':
                 self.send_json(db_export_geojson())
             else:
@@ -441,6 +648,13 @@ def run_builtin():
             if path == '/api/geofences':
                 created = db_create_geofence(body)
                 self.send_json(created, status=201)
+            elif path == '/api/footprints':
+                created = db_record_footprint(body)
+                self.send_json(created, status=201)
+            elif path == '/api/simulation/generate':
+                count = body.get('count', 5) if isinstance(body, dict) else 5
+                fence_id = body.get('geofence_id') if isinstance(body, dict) else None
+                self.send_json(generate_dummy_footprints_in_area(count, fence_id))
             elif path == '/api/telemetry/evaluate':
                 self.send_json(evaluate_telemetry(body))
             elif path.startswith('/api/geofences/') and path.endswith('/toggle'):
@@ -468,6 +682,9 @@ def run_builtin():
             path = urllib.parse.urlparse(self.path).path
             if path == '/api/geofences':
                 db_clear_all()
+                self.send_json({'success': True})
+            elif path == '/api/footprints':
+                db_clear_footprints()
                 self.send_json({'success': True})
             elif path.startswith('/api/geofences/'):
                 fid = path.split('/')[-1]

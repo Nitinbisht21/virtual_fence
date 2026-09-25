@@ -1532,6 +1532,275 @@ input:checked + .slider:before {
   display: none !important;
 }
 
+/* ==========================================================================
+   FOOTPRINT SIMULATION, MOUSE FLAGS & REAL-TIME ACTIVITY LOGS
+   ========================================================================== */
+
+.simulation-section {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 0.85rem;
+  margin-top: 0.85rem;
+}
+
+.sim-switches-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.55rem 0.7rem;
+}
+
+.sim-switch-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.sim-actions-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.sim-actions-row button {
+  flex: 1;
+}
+
+.btn-sim-play {
+  background: rgba(16, 185, 129, 0.15) !important;
+  color: #10b981 !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+.btn-sim-play:hover {
+  background: rgba(16, 185, 129, 0.25) !important;
+  border-color: #10b981 !important;
+}
+
+.log-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.log-panel-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.log-panel-tools {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.btn-log-action {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-log-action:hover {
+  background: var(--bg-input-focus);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.footprints-log-box {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.45rem;
+}
+
+.footprint-log-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.35rem 0.45rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.log-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.log-time {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.log-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.log-badge.enter {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+
+.log-badge.exit {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.log-badge.inside {
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+}
+
+.log-target {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+
+.log-fence {
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Map Elements: Footprint Dots */
+.footprint-dot-icon {
+  background: transparent;
+  border: none;
+}
+
+.footprint-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.8);
+  animation: pulseDot 2s infinite;
+}
+
+@keyframes pulseDot {
+  0% { transform: scale(0.9); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.8; }
+}
+
+/* Map Elements: Generated Mouse Cross Flags */
+.custom-generated-flag {
+  background: transparent;
+  border: none;
+}
+
+.generated-flag-marker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.flag-pin-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.flag-radar-pulse {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  animation: radarWave 1.8s infinite ease-out;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.flag-enter .flag-radar-pulse {
+  background: rgba(16, 185, 129, 0.45);
+}
+
+.flag-exit .flag-radar-pulse {
+  background: rgba(239, 68, 68, 0.45);
+}
+
+@keyframes radarWave {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+}
+
+/* Map Elements: Simulated Moving Asset */
+.simulated-asset-icon {
+  background: transparent;
+  border: none;
+}
+
+.asset-marker-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(4px);
+  border: 1.5px solid #3b82f6;
+  color: #f8fafc;
+  font-size: 0.7rem;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.asset-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
 /* Responsive Media Queries */
 @media (max-width: 900px) {
   .app-main {

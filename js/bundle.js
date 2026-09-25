@@ -13,8 +13,7 @@
   const GeofenceType = Object.freeze({
     CIRCLE: 'circle',
     RECTANGLE: 'rectangle',
-    POLYGON: 'polygon',
-    FLAG: 'flag'
+    POLYGON: 'polygon'
   });
 
   const GeofenceStatus = Object.freeze({
@@ -122,6 +121,107 @@
     return perimeter;
   }
 
+  function isPointInCircle(point, center, radiusMeters) {
+    const d = haversineDistance(point.lat, point.lng, center.lat, center.lng);
+    return d <= radiusMeters;
+  }
+
+  function isPointInRectangle(point, bounds) {
+    const lat = point.lat;
+    const lng = point.lng;
+    return (
+      lat >= Math.min(bounds.south, bounds.north) &&
+      lat <= Math.max(bounds.south, bounds.north) &&
+      lng >= Math.min(bounds.west, bounds.east) &&
+      lng <= Math.max(bounds.west, bounds.east)
+    );
+  }
+
+  function isPointInPolygon(point, polygon) {
+    const lat = point.lat;
+    const lng = point.lng;
+    let inside = false;
+    const n = polygon.length;
+    if (n < 3) return false;
+    let j = n - 1;
+    for (let i = 0; i < n; i++) {
+      const xi = polygon[i][0];
+      const yi = polygon[i][1];
+      const xj = polygon[j][0];
+      const yj = polygon[j][1];
+      const intersect =
+        ((yi > lng) !== (yj > lng)) &&
+        (lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+      j = i;
+    }
+    return inside;
+  }
+
+  function isPointInGeofence(point, fence) {
+    if (!fence || fence.status === GeofenceStatus.DISABLED) return false;
+    let coords = fence.coordinates;
+    if (typeof coords === 'string') {
+      try { coords = JSON.parse(coords); } catch (e) { return false; }
+    }
+    if (!coords) return false;
+
+    if (fence.type === GeofenceType.CIRCLE) {
+      return isPointInCircle(point, coords, Number(fence.radius) || 200);
+    } else if (fence.type === GeofenceType.RECTANGLE) {
+      return isPointInRectangle(point, coords);
+    } else if (fence.type === GeofenceType.POLYGON) {
+      return isPointInPolygon(point, coords);
+    }
+    return false;
+  }
+
+  function generatePointInsideFence(fence) {
+    if (!fence) return null;
+    let coords = fence.coordinates;
+    if (typeof coords === 'string') {
+      try { coords = JSON.parse(coords); } catch (e) { return null; }
+    }
+    if (!coords) return null;
+
+    if (fence.type === GeofenceType.CIRCLE) {
+      const centerLat = Number(coords.lat);
+      const centerLng = Number(coords.lng);
+      const radius = Number(fence.radius) || 200;
+      const r = (radius * 0.85) * Math.sqrt(0.05 + 0.95 * Math.random());
+      const theta = Math.random() * 2 * Math.PI;
+      const dLat = (r * Math.cos(theta)) / 111320.0;
+      const dLng = (r * Math.sin(theta)) / (111320.0 * Math.cos((centerLat * Math.PI) / 180.0));
+      return { lat: Number((centerLat + dLat).toFixed(6)), lng: Number((centerLng + dLng).toFixed(6)) };
+    } else if (fence.type === GeofenceType.RECTANGLE) {
+      const north = Number(coords.north);
+      const south = Number(coords.south);
+      const east = Number(coords.east);
+      const west = Number(coords.west);
+      const lat = south + (north - south) * (0.08 + 0.84 * Math.random());
+      const lng = west + (east - west) * (0.08 + 0.84 * Math.random());
+      return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+    } else if (fence.type === GeofenceType.POLYGON) {
+      const pts = coords;
+      if (!Array.isArray(pts) || pts.length < 3) return null;
+      const lats = pts.map(p => p[0]);
+      const lngs = pts.map(p => p[1]);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+      for (let attempt = 0; attempt < 80; attempt++) {
+        const candLat = minLat + (maxLat - minLat) * Math.random();
+        const candLng = minLng + (maxLng - minLng) * Math.random();
+        if (isPointInPolygon({ lat: candLat, lng: candLng }, pts)) {
+          return { lat: Number(candLat.toFixed(6)), lng: Number(candLng.toFixed(6)) };
+        }
+      }
+      return { lat: Number((lats.reduce((a, b) => a + b, 0) / lats.length).toFixed(6)), lng: Number((lngs.reduce((a, b) => a + b, 0) / lngs.length).toFixed(6)) };
+    }
+    return null;
+  }
+
   function createGeofenceModel({
     id = null,
     name = 'Unnamed Geofence',
@@ -146,7 +246,7 @@
       name: (name || 'Unnamed Geofence').trim(),
       type,
       coordinates: safeCoords,
-      radius: (type === GeofenceType.CIRCLE || type === GeofenceType.FLAG) ? Number(radius) || 25 : undefined,
+      radius: (type === GeofenceType.CIRCLE) ? Number(radius) || 200 : undefined,
       status: status === GeofenceStatus.DISABLED ? GeofenceStatus.DISABLED : GeofenceStatus.ACTIVE,
       color,
       description: (description || '').trim(),
@@ -496,36 +596,46 @@
     CIRCLE: 'circle',
     RECTANGLE: 'rectangle',
     POLYGON: 'polygon',
-    FLAG: 'flag',
     EDITING: 'editing'
   });
 
   class MapManager {
-    constructor({ containerId, onCursorMove, onMapMove, onDraftChange, onSelectGeofence }) {
+    constructor({ containerId, onCursorMove, onMapMove, onDraftChange, onSelectGeofence, onFlagGenerated, onMouseFenceStatusChange }) {
       this.containerId = containerId;
       this.onCursorMove = onCursorMove || (() => {});
       this.onMapMove = onMapMove || (() => {});
       this.onDraftChange = onDraftChange || (() => {});
       this.onSelectGeofence = onSelectGeofence || (() => {});
+      this.onFlagGenerated = onFlagGenerated || (() => {});
+      this.onMouseFenceStatusChange = onMouseFenceStatusChange || (() => {});
 
       this.map = null;
       this.currentMode = DrawingMode.IDLE;
       this.editingGeofenceId = null;
 
-      // 100% Free Tile Providers - No API Keys Required
       this.tileLayers = {};
       this.activeTileLayerKey = 'google_streets';
 
       this.savedLayerGroup = null;
       this.draftLayerGroup = null;
       this.handlesLayerGroup = null;
+      this.footprintsLayerGroup = null;
+      this.flagMarkersLayerGroup = null;
+      this.simulationAssetsLayerGroup = null;
+
+      this.mouseTrackingEnabled = true;
+      this.showFootprintsOnMap = true;
+      this.showFlagsOnMap = true;
+      this.mouseInsideFences = new Set();
+      this.flagCount = 0;
+      this.activeGeofencesList = [];
+      this.assetMarkers = new Map();
 
       this.draftState = {
         type: null,
         circle: { center: null, radius: 200 },
         rectangle: { corner1: null, corner2: null, north: null, south: null, east: null, west: null },
-        polygon: { points: [] },
-        flag: { location: null, radius: 25 }
+        polygon: { points: [] }
       };
 
       this.polygonGuideLine = null;
@@ -556,6 +666,9 @@
       this.initTileLayers();
 
       this.savedLayerGroup = L.layerGroup().addTo(this.map);
+      this.footprintsLayerGroup = L.layerGroup().addTo(this.map);
+      this.flagMarkersLayerGroup = L.layerGroup().addTo(this.map);
+      this.simulationAssetsLayerGroup = L.layerGroup().addTo(this.map);
       this.draftLayerGroup = L.layerGroup().addTo(this.map);
       this.handlesLayerGroup = L.layerGroup().addTo(this.map);
 
@@ -616,6 +729,38 @@
       this.map.on('mousemove', (e) => {
         const { lat, lng } = e.latlng;
         this.onCursorMove({ lat, lng });
+
+        // Mouse Cross-Fence Flag Detection
+        if (this.mouseTrackingEnabled && this.activeGeofencesList && this.activeGeofencesList.length > 0) {
+          const pt = { lat, lng };
+          const nowInside = new Set();
+          let insideFenceName = null;
+
+          for (const fence of this.activeGeofencesList) {
+            if (isPointInGeofence(pt, fence)) {
+              nowInside.add(fence.id);
+              insideFenceName = fence.name;
+
+              // Check ENTER transition
+              if (!this.mouseInsideFences.has(fence.id)) {
+                this.handleFenceTransition('ENTER', fence, pt);
+              }
+            }
+          }
+
+          // Check EXIT transition
+          for (const oldId of this.mouseInsideFences) {
+            if (!nowInside.has(oldId)) {
+              const exitedFence = this.activeGeofencesList.find(f => f.id === oldId);
+              if (exitedFence) {
+                this.handleFenceTransition('EXIT', exitedFence, pt);
+              }
+            }
+          }
+
+          this.mouseInsideFences = nowInside;
+          this.onMouseFenceStatusChange(insideFenceName, nowInside.size > 0);
+        }
 
         if (this.currentMode === DrawingMode.POLYGON && this.draftState.polygon.points.length > 0) {
           this.updatePolygonGuideLine(e.latlng);
@@ -678,10 +823,7 @@
           this.draftState.type = GeofenceType.RECTANGLE;
         } else if (mode === DrawingMode.POLYGON) {
           this.draftState.type = GeofenceType.POLYGON;
-        } else if (mode === DrawingMode.FLAG) {
-          this.draftState.type = GeofenceType.FLAG;
-          this.draftState.flag.radius = 25;
-        }
+
       }
     }
 
@@ -698,8 +840,7 @@
         type: null,
         circle: { center: null, radius: 200 },
         rectangle: { corner1: null, corner2: null, north: null, south: null, east: null, west: null },
-        polygon: { points: [] },
-        flag: { location: null, radius: 25 }
+        polygon: { points: [] }
       };
       this.polygonGuideLine = null;
       this.rectanglePreview = null;
@@ -713,67 +854,10 @@
         this.handleRectangleClick(latlng);
       } else if (this.currentMode === DrawingMode.POLYGON) {
         this.addPolygonPoint([latlng.lat, latlng.lng]);
-      } else if (this.currentMode === DrawingMode.FLAG) {
-        this.setFlagLocation(latlng.lat, latlng.lng);
-      }
+
     }
 
-    // Flag Pin / Checkpoint
-    setFlagLocation(lat, lng, radius = 25) {
-      const loc = { lat: Number(lat), lng: Number(lng) };
-      const r = Number(radius) || 25;
-      this.draftState.type = GeofenceType.FLAG;
-      this.draftState.flag.location = loc;
-      this.draftState.flag.radius = r;
-      this.renderFlagDraft();
-      this.notifyDraftUpdated();
-    }
 
-    renderFlagDraft() {
-      this.draftLayerGroup.clearLayers();
-      this.handlesLayerGroup.clearLayers();
-
-      const { location, radius } = this.draftState.flag;
-      if (!location) return;
-
-      // Draw buffer circle around flag
-      if (radius && radius > 0) {
-        L.circle([location.lat, location.lng], {
-          radius: radius,
-          color: '#f59e0b',
-          fillColor: '#fbbf24',
-          fillOpacity: 0.2,
-          weight: 2,
-          dashArray: '4, 4'
-        }).addTo(this.draftLayerGroup);
-      }
-
-      // Flag marker pin
-      const flagIcon = L.divIcon({
-        className: 'custom-map-handle flag-pin-handle',
-        html: `
-          <div class="flag-pulse-ring"></div>
-          <div class="flag-icon-bubble">
-            <span>🚩</span>
-          </div>
-        `,
-        iconSize: [36, 36],
-        iconAnchor: [18, 32]
-      });
-
-      const flagMarker = L.marker([location.lat, location.lng], {
-        icon: flagIcon,
-        draggable: true,
-        zIndexOffset: 1200
-      }).addTo(this.handlesLayerGroup);
-
-      flagMarker.on('drag', (e) => {
-        const pos = e.target.getLatLng();
-        this.draftState.flag.location = { lat: pos.lat, lng: pos.lng };
-        this.renderFlagDraft();
-        this.notifyDraftUpdated();
-      });
-    }
 
     // Circle
     setCircleCenter(lat, lng, radius = null) {
@@ -1205,10 +1289,7 @@
       } else if (geofence.type === GeofenceType.POLYGON) {
         this.currentMode = DrawingMode.POLYGON;
         this.setPolygonPoints(geofence.coordinates);
-      } else if (geofence.type === GeofenceType.FLAG) {
-        this.currentMode = DrawingMode.FLAG;
-        this.setFlagLocation(geofence.coordinates.lat, geofence.coordinates.lng, geofence.radius);
-      }
+
 
       this.zoomToGeofence(geofence);
     }
@@ -1251,20 +1332,14 @@
           perimeter,
           isValid: points.length >= 3
         };
-      } else if (this.draftState.type === GeofenceType.FLAG && this.draftState.flag.location) {
-        payload = {
-          type: GeofenceType.FLAG,
-          coordinates: this.draftState.flag.location,
-          radius: this.draftState.flag.radius || 25,
-          isValid: true
-        };
-      }
+
 
       this.onDraftChange(payload);
     }
 
     renderSavedGeofences(geofences, selectedId = null) {
       this.savedLayerGroup.clearLayers();
+      this.activeGeofencesList = (geofences || []).filter(f => f.status === 'active');
 
       geofences.forEach((fence) => {
         if (this.editingGeofenceId && fence.id === this.editingGeofenceId) {
@@ -1337,33 +1412,6 @@
         } else if (fence.type === GeofenceType.POLYGON) {
           if (!Array.isArray(coords) || coords.length < 3) return;
           layer = L.polygon(coords, style);
-        } else if (fence.type === GeofenceType.FLAG) {
-          const lat = Number(coords.lat);
-          const lng = Number(coords.lng);
-          const radius = Number(fence.radius) || 25;
-          if (isNaN(lat) || isNaN(lng)) return;
-
-          const flagIcon = L.divIcon({
-            className: 'custom-map-handle flag-pin-handle',
-            html: `
-              <div class="flag-icon-bubble" style="background: ${fence.color || '#f59e0b'}">
-                <span>🚩</span>
-              </div>
-            `,
-            iconSize: [30, 30],
-            iconAnchor: [15, 28]
-          });
-          layer = L.marker([lat, lng], { icon: flagIcon });
-          if (radius > 0) {
-            L.circle([lat, lng], {
-              radius: radius,
-              color: fence.color || '#f59e0b',
-              fillColor: fence.color || '#fbbf24',
-              fillOpacity: 0.15,
-              weight: 1.5,
-              dashArray: '3, 3'
-            }).addTo(this.savedLayerGroup);
-          }
         }
 
         if (layer) {
@@ -1383,6 +1431,130 @@
           layer.addTo(this.savedLayerGroup);
         }
       });
+    }
+
+    handleFenceTransition(type, fence, pt) {
+      this.flagCount++;
+      if (this.showFlagsOnMap) {
+        this.generateFlagMarker(type, fence, pt);
+      }
+      this.onFlagGenerated({ event: type, fence, latlng: pt, timestamp: new Date() });
+    }
+
+    generateFlagMarker(type, fence, pt) {
+      if (!this.flagMarkersLayerGroup) return;
+      const isEnter = type === 'ENTER';
+      const flagColor = isEnter ? '#10b981' : '#ef4444';
+      const flagHtml = `
+        <div class="generated-flag-marker ${isEnter ? 'flag-enter' : 'flag-exit'}">
+          <div class="flag-radar-pulse"></div>
+          <div class="flag-pin-bubble" style="background-color: ${flagColor};">
+            <span>🚩</span>
+            <span>${type}: ${this.escapeHtml(fence.name)}</span>
+          </div>
+        </div>
+      `;
+
+      const flagIcon = L.divIcon({
+        className: 'custom-generated-flag',
+        html: flagHtml,
+        iconSize: [140, 36],
+        iconAnchor: [18, 30]
+      });
+
+      const marker = L.marker([pt.lat, pt.lng], { icon: flagIcon, zIndexOffset: 2000 }).addTo(this.flagMarkersLayerGroup);
+      marker.bindPopup(`
+        <div style="font-family: inherit; font-size: 0.8rem; line-height: 1.4;">
+          <strong style="color: ${flagColor};">🚩 GEOFENCE ${type} FLAG GENERATED</strong><br>
+          <strong>Fence:</strong> ${this.escapeHtml(fence.name)}<br>
+          <strong>Coordinates:</strong> ${formatCoord(pt.lat)}, ${formatCoord(pt.lng)}<br>
+          <strong>Trigger:</strong> Mouse Cross-Fence Boundary
+        </div>
+      `);
+    }
+
+    renderFootprintPoint(latlng, options = {}) {
+      if (!this.footprintsLayerGroup) return;
+      const lat = Array.isArray(latlng) ? latlng[0] : latlng.lat;
+      const lng = Array.isArray(latlng) ? latlng[1] : latlng.lng;
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      const dotIcon = L.divIcon({
+        className: 'footprint-dot-icon',
+        html: '<div class="footprint-dot"></div>',
+        iconSize: [8, 8],
+        iconAnchor: [4, 4]
+      });
+
+      const marker = L.marker([lat, lng], { icon: dotIcon }).addTo(this.footprintsLayerGroup);
+      if (options.device || options.fenceName) {
+        marker.bindTooltip(`
+          <div style="font-size: 0.72rem; font-family: monospace;">
+            <strong>👣 ${this.escapeHtml(options.device || 'Simulated Target')}</strong><br>
+            <span>Zone: ${this.escapeHtml(options.fenceName || 'Active Fence Area')}</span><br>
+            <span>${formatCoord(lat)}, ${formatCoord(lng)}</span>
+          </div>
+        `, { sticky: true });
+      }
+    }
+
+    clearFootprintsOnMap() {
+      if (this.footprintsLayerGroup) this.footprintsLayerGroup.clearLayers();
+    }
+
+    clearFlagMarkersOnMap() {
+      if (this.flagMarkersLayerGroup) this.flagMarkersLayerGroup.clearLayers();
+      this.flagCount = 0;
+    }
+
+    updateSimulatedAsset(assetId, name, latlng, color = '#3b82f6') {
+      if (!this.simulationAssetsLayerGroup) return;
+      let marker = this.assetMarkers.get(assetId);
+
+      const html = `
+        <div class="asset-marker-bubble" style="border-color: ${color};">
+          <div class="asset-pulse" style="background: ${color}; box-shadow: 0 0 6px ${color};"></div>
+          <span>${this.escapeHtml(name)}</span>
+        </div>
+      `;
+
+      const icon = L.divIcon({
+        className: 'simulated-asset-icon',
+        html: html,
+        iconSize: [95, 24],
+        iconAnchor: [47, 12]
+      });
+
+      if (!marker) {
+        marker = L.marker([latlng.lat, latlng.lng], { icon: icon, zIndexOffset: 2500 }).addTo(this.simulationAssetsLayerGroup);
+        this.assetMarkers.set(assetId, marker);
+      } else {
+        marker.setLatLng([latlng.lat, latlng.lng]);
+        marker.setIcon(icon);
+      }
+    }
+
+    clearSimulatedAssets() {
+      if (this.simulationAssetsLayerGroup) this.simulationAssetsLayerGroup.clearLayers();
+      this.assetMarkers.clear();
+    }
+
+    setLayerVisibility(type, visible) {
+      if (type === 'footprints' && this.footprintsLayerGroup) {
+        this.showFootprintsOnMap = visible;
+        if (visible) {
+          if (!this.map.hasLayer(this.footprintsLayerGroup)) this.map.addLayer(this.footprintsLayerGroup);
+        } else {
+          if (this.map.hasLayer(this.footprintsLayerGroup)) this.map.removeLayer(this.footprintsLayerGroup);
+        }
+      } else if (type === 'flags' && this.flagMarkersLayerGroup) {
+        this.showFlagsOnMap = visible;
+        if (visible) {
+          if (!this.map.hasLayer(this.flagMarkersLayerGroup)) this.map.addLayer(this.flagMarkersLayerGroup);
+        } else {
+          if (this.map.hasLayer(this.flagMarkersLayerGroup)) this.map.removeLayer(this.flagMarkersLayerGroup);
+        }
+      }
     }
 
     zoomToGeofence(geofence) {
@@ -1421,12 +1593,7 @@
         if (!Array.isArray(coords) || coords.length < 3) return;
         const poly = L.polygon(coords);
         this.map.fitBounds(poly.getBounds(), { padding: [50, 50], maxZoom: 17 });
-      } else if (geofence.type === GeofenceType.FLAG) {
-        const lat = Number(coords.lat);
-        const lng = Number(coords.lng);
-        if (isNaN(lat) || isNaN(lng)) return;
-        this.map.setView([lat, lng], 16);
-      }
+
     }
 
     fitAll(geofences) {
@@ -1468,13 +1635,7 @@
               }
             });
           }
-        } else if (fence.type === GeofenceType.FLAG) {
-          const lat = Number(coords.lat);
-          const lng = Number(coords.lng);
-          if (!isNaN(lat) && !isNaN(lng)) {
-            bounds.extend([lat, lng]);
-          }
-        }
+
       });
 
       if (bounds.isValid()) {
@@ -1541,6 +1702,7 @@
         this.store.setSelected(first.id);
       }
       this.enterExploreMode();
+      this.loadRecentFootprintsFromBackend();
     }
 
     initElements() {
@@ -1548,8 +1710,7 @@
       this.modeSections = {
         [GeofenceType.CIRCLE]: document.getElementById('section-circle'),
         [GeofenceType.RECTANGLE]: document.getElementById('section-rectangle'),
-        [GeofenceType.POLYGON]: document.getElementById('section-polygon'),
-        [GeofenceType.FLAG]: document.getElementById('section-flag')
+        [GeofenceType.POLYGON]: document.getElementById('section-polygon')
       };
 
       this.btnStartAdd = document.getElementById('btn-start-add');
@@ -1557,9 +1718,28 @@
       this.modeSelectorSection = document.getElementById('mode-selector-section');
       this.formCard = document.querySelector('.form-card');
 
-      this.inputFlagLat = document.getElementById('flag-lat');
-      this.inputFlagLng = document.getElementById('flag-lng');
-      this.inputFlagRadius = document.getElementById('flag-radius');
+      // Simulation & Mouse Flag Controls
+      this.toggleMouseTracking = document.getElementById('toggle-mouse-tracking');
+      this.btnToggleSimulation = document.getElementById('btn-toggle-simulation');
+      this.btnSimulationIcon = document.getElementById('btn-simulation-icon');
+      this.btnSimulationText = document.getElementById('btn-simulation-text');
+      this.btnGenerateFootprints = document.getElementById('btn-generate-footprints');
+      this.toggleShowFootprints = document.getElementById('toggle-show-footprints');
+      this.toggleShowFlags = document.getElementById('toggle-show-flags');
+      this.footprintsLogList = document.getElementById('footprints-log-list');
+      this.footprintCountBadge = document.getElementById('footprint-count-badge');
+      this.btnRefreshFootprints = document.getElementById('btn-refresh-footprints');
+      this.btnClearFootprints = document.getElementById('btn-clear-footprints');
+      this.hudMouseFence = document.getElementById('hud-mouse-fence-val');
+      this.hudFlagCount = document.getElementById('hud-flag-count-val');
+
+      this.simulationRunning = false;
+      this.simulationTimer = null;
+      this.simulatedAssets = [
+        { id: 'DRONE_ALPHA', name: 'Drone Alpha', color: '#10b981', coords: null },
+        { id: 'PATROL_101', name: 'Patrol 101', color: '#3b82f6', coords: null },
+        { id: 'SCOUT_VEHICLE', name: 'Scout 9', color: '#f59e0b', coords: null }
+      ];
 
       this.inputCircleLat = document.getElementById('circle-lat');
       this.inputCircleLng = document.getElementById('circle-lng');
@@ -1691,22 +1871,49 @@
         (input) => input.addEventListener('input', onRectInputChange)
       );
 
-      const onFlagInputChange = () => {
-        const lat = parseFloat(this.inputFlagLat.value);
-        const lng = parseFloat(this.inputFlagLng.value);
-        const radius = parseFloat(this.inputFlagRadius.value) || 25;
-
-        if (!isNaN(lat) && !isNaN(lng)) {
-          this.mapManager.setFlagLocation(lat, lng, radius);
-        }
-      };
-
-      if (this.inputFlagLat && this.inputFlagLng) {
-        this.inputFlagLat.addEventListener('input', onFlagInputChange);
-        this.inputFlagLng.addEventListener('input', onFlagInputChange);
+      if (this.toggleMouseTracking) {
+        this.toggleMouseTracking.addEventListener('change', () => {
+          this.mapManager.mouseTrackingEnabled = this.toggleMouseTracking.checked;
+          if (!this.toggleMouseTracking.checked && this.hudMouseFence) {
+            this.hudMouseFence.innerHTML = '<span style="color:var(--text-muted);">Tracking Disabled</span>';
+          }
+        });
       }
-      if (this.inputFlagRadius) {
-        this.inputFlagRadius.addEventListener('input', onFlagInputChange);
+
+      if (this.toggleShowFootprints) {
+        this.toggleShowFootprints.addEventListener('change', () => {
+          this.mapManager.setLayerVisibility('footprints', this.toggleShowFootprints.checked);
+        });
+      }
+
+      if (this.toggleShowFlags) {
+        this.toggleShowFlags.addEventListener('change', () => {
+          this.mapManager.setLayerVisibility('flags', this.toggleShowFlags.checked);
+        });
+      }
+
+      if (this.btnToggleSimulation) {
+        this.btnToggleSimulation.addEventListener('click', () => {
+          this.toggleSimulation();
+        });
+      }
+
+      if (this.btnGenerateFootprints) {
+        this.btnGenerateFootprints.addEventListener('click', () => {
+          this.generateFootprintsInsideActiveFences();
+        });
+      }
+
+      if (this.btnRefreshFootprints) {
+        this.btnRefreshFootprints.addEventListener('click', () => {
+          this.loadRecentFootprintsFromBackend();
+        });
+      }
+
+      if (this.btnClearFootprints) {
+        this.btnClearFootprints.addEventListener('click', () => {
+          this.clearAllFootprints();
+        });
       }
 
       this.btnFinishPolygon.addEventListener('click', () => {
@@ -2007,9 +2214,6 @@
       this.polygonPointsCount.textContent = '0';
       this.polygonPointsList.innerHTML = '<div class="empty-hint">No vertices added yet. Click map to add.</div>';
 
-      if (this.inputFlagLat) this.inputFlagLat.value = '';
-      if (this.inputFlagLng) this.inputFlagLng.value = '';
-      if (this.inputFlagRadius) this.inputFlagRadius.value = '25';
     }
 
     handleDraftChange(draft) {
@@ -2037,11 +2241,7 @@
       } else if (draft.type === GeofenceType.POLYGON) {
         this.polygonPointsCount.textContent = draft.coordinates.length;
         this.renderPolygonDraftPoints(draft.coordinates);
-      } else if (draft.type === GeofenceType.FLAG && draft.coordinates) {
-        if (this.inputFlagLat) this.inputFlagLat.value = formatCoord(draft.coordinates.lat);
-        if (this.inputFlagLng) this.inputFlagLng.value = formatCoord(draft.coordinates.lng);
-        if (this.inputFlagRadius) this.inputFlagRadius.value = Math.round(draft.radius || 25);
-      }
+
 
       this.renderCoordinatePanelFromDraft(draft);
     }
@@ -2472,14 +2672,7 @@
         if (!isNaN(n) && !isNaN(s) && !isNaN(e) && !isNaN(w) && n > s && e > w) {
           this.mapManager.setRectangleBounds(n, s, e, w);
         }
-      } else if (this.currentMode === GeofenceType.FLAG) {
-        const lat = parseFloat(this.inputFlagLat.value);
-        const lng = parseFloat(this.inputFlagLng.value);
-        const radius = parseFloat(this.inputFlagRadius.value) || 25;
-        if (!isNaN(lat) && !isNaN(lng)) {
-          this.mapManager.setFlagLocation(lat, lng, radius);
-        }
-      }
+
     }
 
     handleSaveGeofence() {
@@ -2842,6 +3035,264 @@
       }, 3500);
     }
 
+    // ==========================================================================
+    // AREA SIMULATION, FOOTPRINTS & MOUSE CROSS-FENCE FLAG ENGINE
+    // ==========================================================================
+
+    handleFlagGenerated(eventData) {
+      if (this.hudFlagCount) {
+        this.hudFlagCount.textContent = this.mapManager.flagCount;
+      }
+
+      const isEnter = eventData.event === 'ENTER';
+      const eventTitle = isEnter ? 'ENTERED' : 'EXITED';
+      this.showToast(`🚩 Flag Generated: Mouse ${eventTitle} "${eventData.fence.name}"`, isEnter ? 'success' : 'warning');
+
+      // Record to backend DB & footprints.log
+      fetch('/api/footprints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_id: 'MOUSE_KEY',
+          geofence_id: eventData.fence.id,
+          geofence_name: eventData.fence.name,
+          latitude: eventData.latlng.lat,
+          longitude: eventData.latlng.lng,
+          event: eventData.event,
+          source: 'mouse_cross_fence'
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        this.addFootprintToLogUI(data);
+      })
+      .catch(err => {
+        console.warn('Telemetry footprint error:', err);
+        this.addFootprintToLogUI({
+          device_id: 'MOUSE_KEY',
+          geofence_name: eventData.fence.name,
+          latitude: eventData.latlng.lat,
+          longitude: eventData.latlng.lng,
+          event: eventData.event,
+          created_at: new Date().toISOString()
+        });
+      });
+    }
+
+    updateMouseFenceHUD(fenceName, isInside) {
+      if (!this.hudMouseFence) return;
+      if (isInside && fenceName) {
+        this.hudMouseFence.innerHTML = `<span style="color:#10b981; font-weight:600;">🟢 Inside "${this.escapeHtml(fenceName)}"</span>`;
+      } else {
+        this.hudMouseFence.innerHTML = '<span style="color:var(--text-muted);">Outside Fences</span>';
+      }
+    }
+
+    addFootprintToLogUI(entry) {
+      if (!this.footprintsLogList) return;
+      const emptyHint = this.footprintsLogList.querySelector('.empty-hint');
+      if (emptyHint) emptyHint.remove();
+
+      const timeStr = entry.created_at ? new Date(entry.created_at).toLocaleTimeString() : new Date().toLocaleTimeString();
+      const ev = (entry.event || 'INSIDE').toUpperCase();
+      const eventClass = ev.toLowerCase();
+      const flagEmoji = (ev === 'ENTER' || ev === 'EXIT') ? '🚩 ' : '👣 ';
+
+      const item = document.createElement('div');
+      item.className = 'footprint-log-item';
+      item.innerHTML = `
+        <div class="log-meta">
+          <span class="log-time">${timeStr}</span>
+          <span class="log-badge ${eventClass}">${flagEmoji}${ev}</span>
+          <span class="log-target">${this.escapeHtml(entry.device_id || 'TARGET')}</span>
+        </div>
+        <div class="log-fence" title="${this.escapeHtml(entry.geofence_name || 'N/A')}">
+          ${this.escapeHtml(entry.geofence_name || 'Active Area')}
+        </div>
+      `;
+
+      this.footprintsLogList.prepend(item);
+
+      while (this.footprintsLogList.children.length > 40) {
+        this.footprintsLogList.removeChild(this.footprintsLogList.lastChild);
+      }
+
+      this.totalLoggedCount = (this.totalLoggedCount || 0) + 1;
+      if (this.footprintCountBadge) {
+        this.footprintCountBadge.textContent = this.totalLoggedCount;
+      }
+    }
+
+    loadRecentFootprintsFromBackend() {
+      fetch('/api/footprints?limit=25')
+        .then(res => res.json())
+        .then(rows => {
+          if (Array.isArray(rows)) {
+            if (this.footprintsLogList) {
+              this.footprintsLogList.innerHTML = '';
+            }
+            if (rows.length === 0) {
+              if (this.footprintsLogList) {
+                this.footprintsLogList.innerHTML = '<div class="empty-hint" style="font-size: 0.74rem;">No footprints or flag events yet. Move mouse over fences or click Drop 5 in Area.</div>';
+              }
+              return;
+            }
+            // Reverse so prepend puts newest at top
+            [...rows].reverse().forEach(r => this.addFootprintToLogUI(r));
+          }
+        })
+        .catch(err => {
+          console.warn('Could not load footprints from backend:', err);
+        });
+    }
+
+    generateFootprintsInsideActiveFences() {
+      const activeFences = this.store.getActiveGeofences();
+      if (!activeFences || activeFences.length === 0) {
+        this.showToast('Please create and activate at least one geofence first!', 'warning');
+        return;
+      }
+
+      fetch('/api/simulation/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 5 })
+      })
+      .then(res => res.json())
+      .then(points => {
+        if (Array.isArray(points)) {
+          points.forEach(fp => {
+            this.mapManager.renderFootprintPoint([fp.latitude, fp.longitude], {
+              device: fp.device_id,
+              fenceName: fp.geofence_name
+            });
+            this.addFootprintToLogUI(fp);
+          });
+          this.showToast(`👣 Generated ${points.length} footprints inside created fence area!`, 'success');
+        }
+      })
+      .catch(err => {
+        // Client-side fallback
+        activeFences.slice(0, 5).forEach((fence, idx) => {
+          const pt = generatePointInsideFence(fence);
+          if (pt) {
+            this.mapManager.renderFootprintPoint(pt, { device: `LOCAL_ASSET_${idx+1}`, fenceName: fence.name });
+            this.addFootprintToLogUI({
+              device_id: `LOCAL_ASSET_${idx+1}`,
+              geofence_name: fence.name,
+              latitude: pt.lat,
+              longitude: pt.lng,
+              event: 'INSIDE',
+              created_at: new Date().toISOString()
+            });
+          }
+        });
+        this.showToast('👣 Generated dummy footprints inside active fence area!', 'success');
+      });
+    }
+
+    toggleSimulation() {
+      if (this.simulationRunning) {
+        this.simulationRunning = false;
+        if (this.simulationTimer) clearInterval(this.simulationTimer);
+        this.simulationTimer = null;
+        if (this.btnSimulationIcon) this.btnSimulationIcon.textContent = '▶';
+        if (this.btnSimulationText) this.btnSimulationText.textContent = 'Start Simulation';
+        this.showToast('⏸ Asset Simulation Paused.', 'info');
+      } else {
+        const activeFences = this.store.getActiveGeofences();
+        if (!activeFences || activeFences.length === 0) {
+          this.showToast('Please create and activate at least one geofence first!', 'warning');
+          return;
+        }
+
+        this.simulationRunning = true;
+        if (this.btnSimulationIcon) this.btnSimulationIcon.textContent = '⏸';
+        if (this.btnSimulationText) this.btnSimulationText.textContent = 'Pause Simulation';
+        this.showToast('▶ Live Simulation Started: Assets moving inside fence area.', 'success');
+
+        this.startSimulationLoop();
+      }
+    }
+
+    startSimulationLoop() {
+      if (this.simulationTimer) clearInterval(this.simulationTimer);
+
+      const stepSimulation = () => {
+        if (!this.simulationRunning) return;
+        const activeFences = this.store.getActiveGeofences();
+        if (!activeFences || activeFences.length === 0) return;
+
+        this.simulatedAssets.forEach((asset, idx) => {
+          const fence = activeFences[idx % activeFences.length];
+
+          // If no coordinate or 15% random step reset, sample inside fence
+          if (!asset.coords || Math.random() < 0.15) {
+            asset.coords = generatePointInsideFence(fence);
+          } else {
+            // Small step
+            const bearing = Math.random() * 2 * Math.PI;
+            const stepDist = 8 + Math.random() * 12; // meters
+            const dLat = (stepDist * Math.cos(bearing)) / 111320.0;
+            const dLng = (stepDist * Math.sin(bearing)) / (111320.0 * Math.cos((asset.coords.lat * Math.PI) / 180.0));
+            const cand = { lat: Number((asset.coords.lat + dLat).toFixed(6)), lng: Number((asset.coords.lng + dLng).toFixed(6)) };
+
+            // Check if cand is still inside the fence
+            if (isPointInGeofence(cand, fence)) {
+              asset.coords = cand;
+            } else {
+              // Rebound towards fence center
+              asset.coords = generatePointInsideFence(fence);
+            }
+          }
+
+          if (asset.coords) {
+            this.mapManager.updateSimulatedAsset(asset.id, asset.name, asset.coords, asset.color);
+            this.mapManager.renderFootprintPoint(asset.coords, { device: asset.name, fenceName: fence.name });
+
+            // Post telemetry footprint
+            fetch('/api/footprints', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                device_id: asset.id,
+                geofence_id: fence.id,
+                geofence_name: fence.name,
+                latitude: asset.coords.lat,
+                longitude: asset.coords.lng,
+                event: 'INSIDE',
+                source: 'simulation_loop'
+              })
+            })
+            .then(res => res.json())
+            .then(data => this.addFootprintToLogUI(data))
+            .catch(() => {});
+          }
+        });
+      };
+
+      stepSimulation();
+      this.simulationTimer = setInterval(stepSimulation, 2600);
+    }
+
+    clearAllFootprints() {
+      this.mapManager.clearFootprintsOnMap();
+      this.mapManager.clearFlagMarkersOnMap();
+      this.mapManager.clearSimulatedAssets();
+      if (this.footprintsLogList) {
+        this.footprintsLogList.innerHTML = '<div class="empty-hint" style="font-size: 0.74rem;">Logs and footprints cleared.</div>';
+      }
+      if (this.footprintCountBadge) this.footprintCountBadge.textContent = '0';
+      if (this.hudFlagCount) this.hudFlagCount.textContent = '0';
+      this.totalLoggedCount = 0;
+
+      fetch('/api/footprints', { method: 'DELETE' })
+        .then(() => {
+          this.showToast('Footprints, Flag Markers, and DB logs cleared.', 'info');
+        })
+        .catch(err => console.warn('Clear footprints error:', err));
+    }
+
     confirmAction(title, message, callback) {
       this.confirmTitle.textContent = title;
       this.confirmMessage.textContent = message;
@@ -2876,6 +3327,12 @@
       },
       onSelectGeofence: (id) => {
         store.setSelected(id);
+      },
+      onFlagGenerated: (eventData) => {
+        if (uiController) uiController.handleFlagGenerated(eventData);
+      },
+      onMouseFenceStatusChange: (fenceName, isInside) => {
+        if (uiController) uiController.updateMouseFenceHUD(fenceName, isInside);
       }
     });
 
