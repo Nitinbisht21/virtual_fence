@@ -741,11 +741,40 @@ def generate_dummy_point_inside_fence(fence):
 
     return None
 
-def generate_dummy_footprints_in_area(count=5, specific_fence_id=None):
+def generate_dummy_footprints_in_area(count=5, specific_fence_id=None, client_fences=None):
     all_fences = db_list_geofences()
+    
+    # If DB is empty but client provided geofences, save them to DB
+    if not all_fences and client_fences and isinstance(client_fences, list):
+        for cf in client_fences:
+            try:
+                db_create_geofence(cf)
+            except Exception:
+                pass
+        all_fences = db_list_geofences()
+
+    # If still completely empty, auto-create a default sample geofence so dummy data always works
+    if not all_fences:
+        default_fence = {
+            'name': 'Demo Security Perimeter Alpha',
+            'type': 'circle',
+            'coordinates': {'lat': 30.123456, 'lng': 78.123456},
+            'radius': 350,
+            'status': 'active',
+            'color': '#2563eb',
+            'description': 'Auto-generated demo area for dummy data simulation'
+        }
+        created = db_create_geofence(default_fence)
+        all_fences = [created] if created else []
+
     active_fences = [f for f in all_fences if f.get('status') == 'active']
+    if not active_fences:
+        active_fences = all_fences
+
     if specific_fence_id:
-        active_fences = [f for f in active_fences if f.get('id') == specific_fence_id]
+        matched = [f for f in active_fences if f.get('id') == specific_fence_id]
+        if matched:
+            active_fences = matched
 
     if not active_fences:
         return []
@@ -844,7 +873,8 @@ def run_flask():
         data = request.get_json(force=True) or {}
         count = data.get('count', 5)
         fence_id = data.get('geofence_id')
-        records = generate_dummy_footprints_in_area(count, fence_id)
+        client_fences = data.get('client_fences') or data.get('fences')
+        records = generate_dummy_footprints_in_area(count, fence_id, client_fences)
         return jsonify(records)
 
     @app.route('/api/database/status', methods=['GET'])
@@ -913,7 +943,8 @@ def run_builtin():
             elif path == '/api/simulation/generate':
                 count = body.get('count', 5) if isinstance(body, dict) else 5
                 fence_id = body.get('geofence_id') if isinstance(body, dict) else None
-                self.send_json(generate_dummy_footprints_in_area(count, fence_id))
+                client_fences = (body.get('client_fences') or body.get('fences')) if isinstance(body, dict) else None
+                self.send_json(generate_dummy_footprints_in_area(count, fence_id, client_fences))
             elif path == '/api/telemetry/evaluate':
                 self.send_json(evaluate_telemetry(body))
             elif path.startswith('/api/geofences/') and path.endswith('/toggle'):

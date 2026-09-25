@@ -316,9 +316,14 @@
               <input type="file" id="file-import-input" accept=".geojson,.json" class="hidden">
             </div>
 
-            <button type="button" id="btn-clear-all-fences" class="btn-outline-danger">
-              Clear All Geofences
-            </button>
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+              <button type="button" id="btn-create-sample-fences" class="btn-tool-sm" style="flex: 1; justify-content: center;" title="Create sample demo geofences for quick testing">
+                <span>🎯</span> Sample Fences
+              </button>
+              <button type="button" id="btn-clear-all-fences" class="btn-outline-danger" style="flex: 1; justify-content: center;">
+                Clear All
+              </button>
+            </div>
           </section>
 
           <!-- Simulation, Footprints & Mouse Boundary Flag Engine -->

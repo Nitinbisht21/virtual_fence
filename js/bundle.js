@@ -28,6 +28,16 @@
     return Number(val).toFixed(decimals);
   }
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .split('&').join('&amp;')
+      .split('<').join('&lt;')
+      .split('>').join('&gt;')
+      .split('"').join('&quot;')
+      .split("'").join('&#39;');
+  }
+
   function formatDistance(meters) {
     if (meters === null || meters === undefined || isNaN(meters)) return '—';
     if (meters >= 1000) {
@@ -356,6 +366,10 @@
 
     getAll() {
       return [...this.geofences];
+    }
+
+    getActiveGeofences() {
+      return (this.geofences || []).filter((g) => g.status === GeofenceStatus.ACTIVE);
     }
 
     getById(id) {
@@ -823,7 +837,7 @@
           this.draftState.type = GeofenceType.RECTANGLE;
         } else if (mode === DrawingMode.POLYGON) {
           this.draftState.type = GeofenceType.POLYGON;
-
+        }
       }
     }
 
@@ -854,7 +868,7 @@
         this.handleRectangleClick(latlng);
       } else if (this.currentMode === DrawingMode.POLYGON) {
         this.addPolygonPoint([latlng.lat, latlng.lng]);
-
+      }
     }
 
 
@@ -1289,7 +1303,7 @@
       } else if (geofence.type === GeofenceType.POLYGON) {
         this.currentMode = DrawingMode.POLYGON;
         this.setPolygonPoints(geofence.coordinates);
-
+      }
 
       this.zoomToGeofence(geofence);
     }
@@ -1332,7 +1346,7 @@
           perimeter,
           isValid: points.length >= 3
         };
-
+      }
 
       this.onDraftChange(payload);
     }
@@ -1431,6 +1445,10 @@
           layer.addTo(this.savedLayerGroup);
         }
       });
+    }
+
+    escapeHtml(str) {
+      return escapeHtml(str);
     }
 
     handleFenceTransition(type, fence, pt) {
@@ -1593,7 +1611,7 @@
         if (!Array.isArray(coords) || coords.length < 3) return;
         const poly = L.polygon(coords);
         this.map.fitBounds(poly.getBounds(), { padding: [50, 50], maxZoom: 17 });
-
+      }
     }
 
     fitAll(geofences) {
@@ -1635,7 +1653,7 @@
               }
             });
           }
-
+        }
       });
 
       if (bounds.isValid()) {
@@ -1735,6 +1753,7 @@
       this.footprintCountBadge = document.getElementById('footprint-count-badge');
       this.btnRefreshFootprints = document.getElementById('btn-refresh-footprints');
       this.btnClearFootprints = document.getElementById('btn-clear-footprints');
+      this.btnCreateSampleFences = document.getElementById('btn-create-sample-fences');
       this.hudMouseFence = document.getElementById('hud-mouse-fence-val');
       this.hudFlagCount = document.getElementById('hud-flag-count-val');
 
@@ -1918,6 +1937,12 @@
       if (this.btnClearFootprints) {
         this.btnClearFootprints.addEventListener('click', () => {
           this.clearAllFootprints();
+        });
+      }
+
+      if (this.btnCreateSampleFences) {
+        this.btnCreateSampleFences.addEventListener('click', () => {
+          this.createSampleDemoGeofences();
         });
       }
 
@@ -2211,8 +2236,7 @@
       const instructions = {
         [GeofenceType.CIRCLE]: 'Click any location on the map to place circle center, then drag the radius handle to resize.',
         [GeofenceType.RECTANGLE]: 'Click Corner 1 on the map, then move cursor and click Corner 2 to complete the rectangle.',
-        [GeofenceType.POLYGON]: 'Click on the map to add vertices (Point 1 → Point 2 → ...). Click Point 1 or "Finish" when done.',
-        [GeofenceType.FLAG]: 'Click any location on the map to plant the Flag Pin / Checkpoint, or enter Lat/Lng coordinates directly.'
+        [GeofenceType.POLYGON]: 'Click on the map to add vertices (Point 1 → Point 2 → ...). Click Point 1 or "Finish" when done.'
       };
       this.drawingInstruction.textContent = instructions[mode] || '';
 
@@ -2261,7 +2285,7 @@
       } else if (draft.type === GeofenceType.POLYGON) {
         this.polygonPointsCount.textContent = draft.coordinates.length;
         this.renderPolygonDraftPoints(draft.coordinates);
-
+      }
 
       this.renderCoordinatePanelFromDraft(draft);
     }
@@ -2407,34 +2431,6 @@
               <div class="details-poly-list">
                 ${pointsListHtml || '<div class="empty-hint">Click on map to add points</div>'}
               </div>
-            </div>
-          </div>
-        `;
-      } else if (draft.type === GeofenceType.FLAG) {
-        html = `
-          <div class="details-grid flag-view">
-            <div class="details-section-title">
-              <span class="badge-type flag">FLAG PIN / CHECKPOINT (DRAFT)</span>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Latitude</div>
-              <div class="coord-value monospace">${formatCoord(draft.coordinates.lat)}°</div>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Longitude</div>
-              <div class="coord-value monospace">${formatCoord(draft.coordinates.lng)}°</div>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Buffer Radius</div>
-              <div class="coord-value highlight">${formatDistance(draft.radius || 25)}</div>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Type</div>
-              <div class="coord-value">Point Marker</div>
             </div>
           </div>
         `;
@@ -2621,49 +2617,6 @@
             </div>
           </div>
         `;
-      } else if (geofence.type === GeofenceType.FLAG) {
-        contentHtml = `
-          <div class="details-header-card">
-            <div class="details-title-row">
-              <div class="name-chip">
-                <span class="color-dot" style="background-color: ${geofence.color || '#f59e0b'}"></span>
-                <h3 class="fence-title">${geofence.name}</h3>
-              </div>
-              <div class="badge-group">
-                <span class="badge-type flag">FLAG PIN</span>
-                <span class="badge-status ${geofence.status}">${geofence.status.toUpperCase()}</span>
-              </div>
-            </div>
-            ${geofence.description ? `<p class="fence-desc-text">${geofence.description}</p>` : ''}
-          </div>
-
-          <div class="details-grid flag-view">
-            <div class="coord-block">
-              <div class="coord-label">Pin Latitude</div>
-              <div class="coord-value monospace">${formatCoord(geofence.coordinates.lat)}°</div>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Pin Longitude</div>
-              <div class="coord-value monospace">${formatCoord(geofence.coordinates.lng)}°</div>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Proximity Buffer</div>
-              <div class="coord-value highlight">${formatDistance(geofence.radius || 25)}</div>
-            </div>
-
-            <div class="coord-block">
-              <div class="coord-label">Marker Category</div>
-              <div class="coord-value">Checkpoint / Flag</div>
-            </div>
-
-            <div class="coord-block full-width meta-timestamp">
-              <span class="meta-label">ID: <code class="monospace">${geofence.id}</code></span>
-              <span class="meta-label">Created: ${new Date(geofence.created_at).toLocaleString()}</span>
-            </div>
-          </div>
-        `;
       }
 
       this.detailsContent.innerHTML = contentHtml;
@@ -2692,7 +2645,7 @@
         if (!isNaN(n) && !isNaN(s) && !isNaN(e) && !isNaN(w) && n > s && e > w) {
           this.mapManager.setRectangleBounds(n, s, e, w);
         }
-
+      }
     }
 
     handleSaveGeofence() {
@@ -2706,8 +2659,6 @@
           this.showToast('Please define opposite corners on the map for the rectangle', 'warning');
         } else if (this.currentMode === GeofenceType.POLYGON) {
           this.showToast('Please add at least 3 points to complete the polygon', 'warning');
-        } else if (this.currentMode === GeofenceType.FLAG) {
-          this.showToast('Please click on the map to plant the Flag Pin', 'warning');
         }
         return;
       }
@@ -2735,7 +2686,7 @@
           name,
           type: draft.type,
           coordinates: draft.coordinates,
-          radius: (draft.type === GeofenceType.CIRCLE || draft.type === GeofenceType.FLAG) ? Number(draft.radius) || 25 : undefined,
+          radius: (draft.type === GeofenceType.CIRCLE) ? Number(draft.radius) || 200 : undefined,
           status,
           color: selectedColor,
           description
@@ -2746,7 +2697,7 @@
           name,
           type: draft.type,
           coordinates: draft.coordinates,
-          radius: (draft.type === GeofenceType.CIRCLE || draft.type === GeofenceType.FLAG) ? Number(draft.radius) || 25 : undefined,
+          radius: (draft.type === GeofenceType.CIRCLE) ? Number(draft.radius) || 200 : undefined,
           status,
           color: selectedColor,
           description
@@ -2823,8 +2774,6 @@
             coordSummary = `N: ${formatCoord(fence.coordinates.north)}, S: ${formatCoord(fence.coordinates.south)}`;
           } else if (fence.type === GeofenceType.POLYGON) {
             coordSummary = `${fence.coordinates.length} points`;
-          } else if (fence.type === GeofenceType.FLAG) {
-            coordSummary = `Pin: ${formatCoord(fence.coordinates.lat)}, ${formatCoord(fence.coordinates.lng)} &bull; Buffer: ${formatDistance(fence.radius || 25)}`;
           }
 
           return `
@@ -2982,9 +2931,6 @@
         const pts = target.coordinates || [];
         const lines = pts.map((p, i) => `${i + 1}. ${formatCoord(p[0])}, ${formatCoord(p[1])}`).join('\n');
         text = `GEOFENCE DETAILS\nType: Polygon\nPoints:\n${lines}`;
-      } else if (target.type === GeofenceType.FLAG) {
-        const coords = target.coordinates;
-        text = `GEOFENCE DETAILS\nType: Flag Pin / Checkpoint\nLatitude: ${formatCoord(coords.lat)}\nLongitude: ${formatCoord(coords.lng)}\nBuffer Radius: ${Math.round(target.radius || 25)} m`;
       }
 
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -3167,20 +3113,24 @@
     }
 
     generateFootprintsInsideActiveFences() {
-      const activeFences = this.store.getActiveGeofences();
+      let activeFences = this.store.getActiveGeofences();
       if (!activeFences || activeFences.length === 0) {
-        this.showToast('Please create and activate at least one geofence first!', 'warning');
-        return;
+        const allFences = this.store.getAll();
+        if (allFences && allFences.length > 0) {
+          activeFences = allFences;
+        } else {
+          activeFences = this.createSampleDemoGeofences();
+        }
       }
 
       fetch('/api/simulation/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count: 5 })
+        body: JSON.stringify({ count: 5, client_fences: activeFences })
       })
       .then(res => res.json())
       .then(points => {
-        if (Array.isArray(points)) {
+        if (Array.isArray(points) && points.length > 0) {
           points.forEach(fp => {
             this.mapManager.renderFootprintPoint([fp.latitude, fp.longitude], {
               device: fp.device_id,
@@ -3188,27 +3138,74 @@
             });
             this.addFootprintToLogUI(fp);
           });
-          this.showToast(`👣 Generated ${points.length} footprints inside created fence area!`, 'success');
+          this.showToast(`👣 Generated ${points.length} dummy footprints inside area!`, 'success');
+        } else {
+          this.generateLocalFallbackFootprints(activeFences);
         }
       })
       .catch(err => {
-        // Client-side fallback
-        activeFences.slice(0, 5).forEach((fence, idx) => {
-          const pt = generatePointInsideFence(fence);
-          if (pt) {
-            this.mapManager.renderFootprintPoint(pt, { device: `LOCAL_ASSET_${idx+1}`, fenceName: fence.name });
-            this.addFootprintToLogUI({
-              device_id: `LOCAL_ASSET_${idx+1}`,
-              geofence_name: fence.name,
-              latitude: pt.lat,
-              longitude: pt.lng,
-              event: 'INSIDE',
-              created_at: new Date().toISOString()
-            });
-          }
-        });
-        this.showToast('👣 Generated dummy footprints inside active fence area!', 'success');
+        console.warn('Backend dummy generator unavailable, using local client fallback:', err);
+        this.generateLocalFallbackFootprints(activeFences);
       });
+    }
+
+    generateLocalFallbackFootprints(activeFences) {
+      if (!activeFences || activeFences.length === 0) return;
+      activeFences.slice(0, 5).forEach((fence, idx) => {
+        const pt = generatePointInsideFence(fence);
+        if (pt) {
+          this.mapManager.renderFootprintPoint(pt, { device: `LOCAL_ASSET_${idx + 1}`, fenceName: fence.name });
+          this.addFootprintToLogUI({
+            device_id: `LOCAL_ASSET_${idx + 1}`,
+            geofence_name: fence.name,
+            latitude: pt.lat,
+            longitude: pt.lng,
+            event: 'INSIDE',
+            created_at: new Date().toISOString()
+          });
+        }
+      });
+      this.showToast('👣 Generated dummy footprints inside fence area!', 'success');
+    }
+
+    createSampleDemoGeofences() {
+      const center = (this.mapManager && this.mapManager.map) 
+        ? this.mapManager.map.getCenter() 
+        : { lat: 30.123456, lng: 78.123456 };
+      const lat = center.lat;
+      const lng = center.lng;
+
+      const fence1 = this.store.add({
+        name: 'Demo Alpha Perimeter',
+        type: GeofenceType.CIRCLE,
+        coordinates: { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) },
+        radius: 320,
+        status: GeofenceStatus.ACTIVE,
+        color: '#2563eb',
+        description: 'Auto-generated demo circular perimeter with real-time telemetry'
+      });
+
+      const dLat = 0.005;
+      const dLng = 0.006;
+      const fence2 = this.store.add({
+        name: 'Demo Sector B Depot',
+        type: GeofenceType.RECTANGLE,
+        coordinates: {
+          north: Number((lat + dLat + 0.004).toFixed(6)),
+          south: Number((lat + dLat).toFixed(6)),
+          east: Number((lng + dLng + 0.006).toFixed(6)),
+          west: Number((lng + dLng).toFixed(6))
+        },
+        status: GeofenceStatus.ACTIVE,
+        color: '#10b981',
+        description: 'Auto-generated demo logistics facility'
+      });
+
+      const all = this.store.getAll();
+      this.mapManager.renderSavedGeofences(all, fence1 ? fence1.id : null);
+      this.renderSavedList();
+      this.showToast('🎯 Created 2 sample demo geofences on the map!', 'success');
+      return [fence1, fence2];
     }
 
     toggleSimulation() {
@@ -3220,10 +3217,14 @@
         if (this.btnSimulationText) this.btnSimulationText.textContent = 'Start Simulation';
         this.showToast('⏸ Asset Simulation Paused.', 'info');
       } else {
-        const activeFences = this.store.getActiveGeofences();
+        let activeFences = this.store.getActiveGeofences();
         if (!activeFences || activeFences.length === 0) {
-          this.showToast('Please create and activate at least one geofence first!', 'warning');
-          return;
+          const all = this.store.getAll();
+          if (all.length > 0) {
+            activeFences = all;
+          } else {
+            activeFences = this.createSampleDemoGeofences();
+          }
         }
 
         this.simulationRunning = true;
@@ -3352,38 +3353,42 @@
      ========================================================================== */
 
   function initApp() {
-    const store = new GeofenceStore();
-    let uiController = null;
+    try {
+      const store = new GeofenceStore();
+      let uiController = null;
 
-    const mapManager = new MapManager({
-      containerId: 'map',
-      onCursorMove: (latlng) => {
-        if (uiController) uiController.updateCursorHUD(latlng);
-      },
-      onMapMove: (mapData) => {
-        if (uiController) uiController.updateMapCenterHUD(mapData);
-      },
-      onDraftChange: (draft) => {
-        if (uiController) uiController.handleDraftChange(draft);
-      },
-      onSelectGeofence: (id) => {
-        store.setSelected(id);
-      },
-      onFlagGenerated: (eventData) => {
-        if (uiController) uiController.handleFlagGenerated(eventData);
-      },
-      onMouseFenceStatusChange: (fenceName, isInside) => {
-        if (uiController) uiController.updateMouseFenceHUD(fenceName, isInside);
-      }
-    });
+      const mapManager = new MapManager({
+        containerId: 'map',
+        onCursorMove: (latlng) => {
+          if (uiController) uiController.updateCursorHUD(latlng);
+        },
+        onMapMove: (mapData) => {
+          if (uiController) uiController.updateMapCenterHUD(mapData);
+        },
+        onDraftChange: (draft) => {
+          if (uiController) uiController.handleDraftChange(draft);
+        },
+        onSelectGeofence: (id) => {
+          store.setSelected(id);
+        },
+        onFlagGenerated: (eventData) => {
+          if (uiController) uiController.handleFlagGenerated(eventData);
+        },
+        onMouseFenceStatusChange: (fenceName, isInside) => {
+          if (uiController) uiController.updateMouseFenceHUD(fenceName, isInside);
+        }
+      });
 
-    uiController = new UIController({
-      store,
-      mapManager
-    });
+      uiController = new UIController({
+        store,
+        mapManager
+      });
 
-    window.geofenceApp = { store, mapManager, uiController };
-    console.log('Geofence Map Builder initialized successfully.');
+      window.geofenceApp = { store, mapManager, uiController };
+      console.log('Geofence Map Builder initialized successfully.');
+    } catch (err) {
+      console.error('Fatal initialization error in Geofence Map Builder:', err);
+    }
   }
 
   if (document.readyState === 'loading') {
